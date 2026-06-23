@@ -1,9 +1,13 @@
+"""知识采集引擎 — 统一入口，支持 URL/文件/纯文本"""
 import re
+import json
+import logging
 import requests
 from pathlib import Path
 from bs4 import BeautifulSoup
 from skills.multimodal_skill import image_to_text
 
+logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────
 # 平台识别
@@ -13,7 +17,25 @@ _PLATFORM_PATTERNS = {
     "xiaohongshu":  r"xiaohongshu\.com",
     "douban":       r"douban\.com",
     "wechat_mp":    r"mp\.weixin\.qq\.com",
+    "zhihu":        r"zhihu\.com",
+    "baike_baidu":  r"baike\.baidu\.com",
+    "sspai":        r"sspai\.com",
+    "wikipedia":    r"wikipedia\.org",
 }
+
+_PLATFORM_LABELS = {
+    "xiaohongshu":  "小红书",
+    "douban":       "豆瓣",
+    "wechat_mp":    "微信公众号",
+    "zhihu":        "知乎",
+    "baike_baidu":  "百度百科",
+    "sspai":        "少数派",
+    "wikipedia":    "Wikipedia",
+    "generic":      "通用网页",
+    "text":         "纯文本",
+    "file":         "文件上传",
+}
+
 
 def _detect_platform(url: str) -> str:
     """根据 URL 域名识别平台，返回平台标识或 'generic'"""
@@ -37,10 +59,22 @@ _BASE_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
+# 移动端 UA，对部分反爬网站更友好
+_MOBILE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/16.0 Mobile/15E148 Safari/604.1"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
 
-def _fetch_html(url: str, extra_headers: dict = None, timeout: int = 15) -> str:
+
+def _fetch_html(url: str, extra_headers: dict = None, timeout: int = 15,
+                use_mobile_ua: bool = False) -> str:
     """统一的网页抓取，返回 HTML 文本"""
-    headers = dict(_BASE_HEADERS)
+    headers = dict(_MOBILE_HEADERS if use_mobile_ua else _BASE_HEADERS)
     if extra_headers:
         headers.update(extra_headers)
     resp = requests.get(url, headers=headers, timeout=timeout,
@@ -54,17 +88,42 @@ def _fetch_html(url: str, extra_headers: dict = None, timeout: int = 15) -> str:
 def _extract_clean_text(html: str, remove_tags: list = None) -> str:
     """从 HTML 中提取清洗后的纯文本"""
     soup = BeautifulSoup(html, "html.parser")
-
-    # 移除干扰标签
     kill_tags = remove_tags or ["script", "style", "nav", "footer", "header",
-                                "iframe", "noscript", "svg"]
+                                "iframe", "noscript", "svg", "form"]
     for tag in soup(kill_tags):
         tag.decompose()
-
     text = soup.get_text(separator="\n", strip=True)
-    # 去除多余空行
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _extract_meta(soup, property_name: str, fallback_name: str = None) -> str:
+    """从 BeautifulSoup 对象中提取 meta 标签内容"""
+    # 先尝试 og:xxx
+    meta = soup.find("meta", property=property_name)
+    if meta and meta.get("content"):
+        return meta["content"].strip()
+    # 再尝试 name=xxx
+    if fallback_name:
+        meta = soup.find("meta", attrs={"name": fallback_name})
+        if meta and meta.get("content"):
+            return meta["content"].strip()
+    return ""
+
+
+def _build_result(result_type: str, content: str, source_url: str,
+                  platform: str, note: str = "") -> dict:
+    """构建统一的采集结果"""
+    r = {
+        "type": result_type,
+        "raw_content": content,
+        "source_path": source_url,
+        "source_url": source_url,
+        "platform": platform,
+    }
+    if note:
+        r["note"] = note
+    return r
 
 
 # ──────────────────────────────────────────────────────────
@@ -72,242 +131,406 @@ def _extract_clean_text(html: str, remove_tags: list = None) -> str:
 # ──────────────────────────────────────────────────────────
 
 def _ingest_xiaohongshu(url: str) -> dict:
-    """小红书笔记抓取"""
+    """小红书笔记抓取（v2：适配新版 __INITIAL_STATE__ 结构）"""
     try:
         html = _fetch_html(url, extra_headers={
             "Referer": "https://www.xiaohongshu.com/",
-            "Cookie": "",  # 如需登录态可在此处填入
-        })
-
-        # 小红书在 <meta name="og:title"> 和 <meta name="description"> 中有信息
+        }, use_mobile_ua=True)
         soup = BeautifulSoup(html, "html.parser")
 
-        title = ""
-        og_title = soup.find("meta", property="og:title")
-        if og_title and og_title.get("content"):
-            title = og_title["content"]
+        title = _extract_meta(soup, "og:title", "description")
+        desc = _extract_meta(soup, "og:description")
+        body = ""
+        note_parts = []
 
-        desc = ""
-        og_desc = soup.find("meta", property="og:description")
-        if og_desc and og_desc.get("content"):
-            desc = og_desc["content"]
-        if not desc:
-            desc_meta = soup.find("meta", attrs={"name": "description"})
-            if desc_meta and desc_meta.get("content"):
-                desc = desc_meta["content"]
-
-        # 正文内容从 #detail-desc 或 note-scroller 容器提取
-        content_parts = []
-        for selector in ["#detail-desc", ".note-scroller", ".note-text",
-                         "[class*='note-text']", "[class*='content']"]:
+        # ── 方式1：解析 __INITIAL_STATE__（小红书 SSR 预渲染数据）──
+        m = re.search(r"window\.__INITIAL_STATE__\s*=\s*({.*?})\s*</script>",
+                      html, re.DOTALL)
+        if m:
             try:
-                el = soup.select_one(selector)
-                if el:
-                    content_parts.append(el.get_text(separator="\n", strip=True))
-            except Exception:
-                pass
+                raw = m.group(1)
+                # 替换 JS 特殊值
+                raw = raw.replace("undefined", "null")
+                raw = re.sub(r":\s*NaN", ": null", raw)
+                data = json.loads(raw)
 
-        body = "\n".join(content_parts) if content_parts else _extract_clean_text(html)
-        full_text = f"{title}\n{desc}\n{body}".strip()
+                # 新版: noteData，旧版: note
+                note_root = data.get("noteData") or data.get("note") or {}
 
-        return {"type": "url", "raw_content": full_text, "source_path": url,
-                "platform": "xiaohongshu"}
+                # 尝试多个路径找到笔记详情
+                def _find_note_in_tree(d, depth=0):
+                    """递归查找笔记内容"""
+                    if depth > 5 or not isinstance(d, dict):
+                        return {}
+                    # 直接路径
+                    for key in ["noteDetailMap", "noteDetail", "note"]:
+                        if key in d and isinstance(d[key], dict):
+                            inner = d[key]
+                            first = next(iter(inner.values()), {}) if inner else {}
+                            note = first.get("note", first) if isinstance(first, dict) else {}
+                            if note.get("title") or note.get("desc"):
+                                return note
+                    # noteList 路径
+                    if "noteList" in d:
+                        for note_item in d.get("noteList", [])[:3]:
+                            n = note_item.get("note", note_item)
+                            if isinstance(n, dict) and (n.get("title") or n.get("desc")):
+                                return n
+                    # 递归搜索
+                    for k, v in d.items():
+                        if isinstance(v, dict):
+                            result = _find_note_in_tree(v, depth + 1)
+                            if result:
+                                return result
+                    return {}
+
+                note = _find_note_in_tree(note_root)
+                
+                if note.get("title"):
+                    title = note["title"]
+                if note.get("desc"):
+                    body = note["desc"]
+                    note_parts.append(body)
+
+                # 尝试从 normalNotePreloadData 获取
+                preload = note_root.get("normalNotePreloadData", {})
+                if isinstance(preload, dict):
+                    for k in list(preload.keys())[:3]:
+                        entry = preload.get(k, {})
+                        if isinstance(entry, dict):
+                            n = entry.get("note", entry)
+                            if isinstance(n, dict):
+                                if n.get("title") and not title:
+                                    title = n["title"]
+                                if n.get("desc") and not body:
+                                    body = n["desc"]
+                                    note_parts.append(body)
+
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.debug(f"小红书 INITIAL_STATE 解析失败: {e}")
+
+        # ── 方式2：CSS 选择器提取可见文本 ──
+        if not note_parts:
+            for sel in ["#detail-desc", ".note-scroller", ".note-text",
+                        "[class*='note-text']", "[class*='desc']"]:
+                try:
+                    el = soup.select_one(sel)
+                    if el:
+                        t = el.get_text(separator="\n", strip=True)
+                        if len(t) > 20:
+                            note_parts.append(t)
+                except Exception:
+                    pass
+
+        # 组装内容
+        content_lines = [title] if title else []
+        if desc and desc not in content_lines:
+            content_lines.append(desc)
+        for p in note_parts:
+            if p not in content_lines:
+                content_lines.append(p)
+
+        full_text = "\n".join(content_lines).strip()
+
+        # 如果只拿到导航文本（< 50字符），标记为受限
+        note = ""
+        if len(full_text) < 50:
+            note = "⚠️ 小红书内容为 JS 动态加载，直接抓取仅能获取标题和摘要。建议在 APP 中复制笔记链接后，用「分享→复制链接」的方式获取完整内容。"
+            full_text = f"[小红书笔记 - 内容需JS渲染]\n{full_text}"
+
+        return _build_result("url", full_text, url, "xiaohongshu", note)
     except Exception as e:
-        return _fallback_generic(url, f"小红书抓取失败: {e}")
+        return _build_result("url", f"[小红书抓取失败] {e}", url, "xiaohongshu",
+                             f"Error: {e}")
 
 
 def _ingest_douban(url: str) -> dict:
-    """豆瓣（影评/书评/日记/小组帖）抓取"""
+    """豆瓣抓取（v2：增加移动版备用 + 反爬处理）"""
+    fallback_reason = ""
+
+    # ── 方式1：PC 版 ──
     try:
         html = _fetch_html(url, extra_headers={
             "Referer": "https://www.douban.com/",
         })
         soup = BeautifulSoup(html, "html.parser")
 
+        # 检查是否被反爬（短页面 / 只有导航）
+        if len(html) < 5000 and "豆瓣" in html:
+            # 可能被反爬，尝试移动版
+            raise ValueError("疑似反爬拦截页面")
+
         # 提取标题
         title = ""
-        for sel in ["h1", "[property='og:title']", ".article h1", ".subject h1"]:
+        for sel in ["h1", "[property='og:title']", ".article h1",
+                    ".subject h1", "title"]:
             el = soup.select_one(sel)
             if el:
                 t = el.get("content", "") if el.name == "meta" else el.get_text(strip=True)
-                if t:
+                # 去除 " (豆瓣)" 后缀
+                t = re.sub(r"\s*\(?豆瓣\)?\s*$", "", t)
+                if t and len(t) > 2:
                     title = t
                     break
 
         # 提取正文
         body_parts = []
-        for sel in [
-            "#link-report",          # 书评/影评正文
-            ".review-content",       # 评论
-            ".topic-content",        # 小组主帖
-            ".note-content",         # 日记
-            ".article .intro",       # 简介
-        ]:
-            el = soup.select_one(sel)
-            if el:
-                body_parts.append(el.get_text(separator="\n", strip=True))
+        content_selectors = [
+            "#link-report", ".review-content", ".topic-content",
+            ".note-content", ".article .intro", "#content", ".subject-intro",
+        ]
+        for sel in content_selectors:
+            try:
+                el = soup.select_one(sel)
+                if el:
+                    text = el.get_text(separator="\n", strip=True)
+                    if len(text) > 20:
+                        body_parts.append(text)
+            except Exception:
+                pass
 
-        # 如果有评分等结构化信息，也保留
-        rating_el = soup.select_one(".rating_num, [class*='rating']")
+        # 评分
+        rating_el = soup.select_one(".rating_num, [class*='rating_num'], .ll.rating_num")
         rating = f"评分: {rating_el.get_text(strip=True)}" if rating_el else ""
-
-        body = "\n".join(p for p in body_parts if p)
         if rating:
-            body = f"{rating}\n{body}"
+            body_parts.insert(0, rating)
 
-        full_text = f"{title}\n{body}".strip()
-        if not full_text.strip():
-            full_text = _extract_clean_text(html)
+        body = "\n\n".join(body_parts)
+        full_text = f"{title}\n\n{body}".strip() if title else body
 
-        return {"type": "url", "raw_content": full_text, "source_path": url,
-                "platform": "douban"}
+        if len(full_text) > 50:
+            return _build_result("url", full_text, url, "douban")
+
     except Exception as e:
-        return _fallback_generic(url, f"豆瓣抓取失败: {e}")
+        fallback_reason = str(e)
+
+    # ── 方式2：移动版 ──
+    try:
+        mobile_url = re.sub(r"://(www\.)?douban\.com", "://m.douban.com", url)
+        if mobile_url != url:
+            html = _fetch_html(mobile_url, use_mobile_ua=True)
+            soup = BeautifulSoup(html, "html.parser")
+
+            title = ""
+            for sel in ["h1", "title", ".title"]:
+                el = soup.select_one(sel)
+                if el:
+                    t = el.get_text(strip=True)
+                    t = re.sub(r"\s*\(?豆瓣\)?\s*$", "", t)
+                    if t and len(t) > 2:
+                        title = t
+                        break
+
+            body = _extract_clean_text(html)
+            full_text = f"{title}\n\n{body}".strip() if title else body
+
+            if len(full_text) > 50:
+                return _build_result("url", full_text, mobile_url, "douban",
+                                     f"(已切换移动版，原因: {fallback_reason[:50]})")
+    except Exception as e2:
+        fallback_reason += f"; 移动版: {e2}"
+
+    # ── 降级：返回元数据 ──
+    return _build_result("url",
+                         f"[豆瓣页面 - 内容受限]\n{fallback_reason}\n\n💡 提示：豆瓣反爬较严格，建议手动复制内容后粘贴到 Agent 中。",
+                         url, "douban",
+                         f"受限: {fallback_reason[:100]}")
 
 
 def _ingest_wechat_mp(url: str) -> dict:
-    """微信公众号文章抓取"""
+    """微信公众号文章抓取（v2：改进降级方案）"""
     try:
-        # 微信公众号有较强反爬，需要模拟浏览器行为
         html = _fetch_html(url, extra_headers={
             "Referer": "https://mp.weixin.qq.com/",
-            "Accept-Encoding": "gzip, deflate, br",
         }, timeout=20)
-
         soup = BeautifulSoup(html, "html.parser")
 
-        # 公众号文章标题在 #activity-name 或 <h1>
+        # ── 方式1：标准 HTML 解析（适合 PC 微信打开的页面）──
         title = ""
-        for sel in ["#activity-name", "h1.rich_media_title", ".rich_media_title"]:
+        for sel in ["#activity-name", "h1.rich_media_title", ".rich_media_title",
+                    "h2.rich_media_title", "[class*='rich_media_title']"]:
             el = soup.select_one(sel)
             if el:
                 title = el.get_text(strip=True)
-                break
+                if title:
+                    break
 
-        # 正文在 #js_content 或 .rich_media_content
         body = ""
-        for sel in ["#js_content", ".rich_media_content", "#js_article"]:
+        for sel in ["#js_content", ".rich_media_content", "#js_article",
+                    "[class*='rich_media_content']"]:
             el = soup.select_one(sel)
             if el:
                 body = el.get_text(separator="\n", strip=True)
-                break
+                if len(body) > 50:
+                    break
 
-        # 如果都提取不到，尝试从 meta 标签获取
-        if not title and not body:
-            og_title = soup.find("meta", property="og:title")
-            if og_title:
-                title = og_title.get("content", "")
-            og_desc = soup.find("meta", property="og:description")
-            if og_desc:
-                body = og_desc.get("content", "")
+        if title or body:
+            full_text = f"{title}\n\n{body}".strip()
+            return _build_result("url", full_text, url, "wechat_mp")
 
-        full_text = f"{title}\n\n{body}".strip()
-        return {"type": "url", "raw_content": full_text, "source_path": url,
-                "platform": "wechat_mp"}
     except Exception as e:
-        return _fallback_generic(url, f"公众号抓取失败: {e}")
+        logger.debug(f"公众号 HTML 解析失败: {e}")
+
+    # ── 方式2：降级到 og/metadata ──
+    try:
+        html2 = _fetch_html(url, timeout=10)
+        soup2 = BeautifulSoup(html2, "html.parser")
+        title = _extract_meta(soup2, "og:title") or _extract_meta(soup2, "twitter:title")
+        desc = _extract_meta(soup2, "og:description") or _extract_meta(soup2, "description", "description")
+        page_title = ""
+        t = soup2.find("title")
+        if t:
+            page_title = t.get_text(strip=True)
+
+        content_parts = [p for p in [title, desc] if p]
+        if not content_parts and page_title:
+            content_parts = [page_title]
+
+        if content_parts:
+            full_text = "\n".join(content_parts)
+        else:
+            full_text = page_title or "微信公众号文章"
+
+        note = ("⚠️ 公众号文章内容为 JS 动态加载，直接抓取仅能获取标题。"
+                "建议：在微信中打开文章 → 复制链接 → 用「在浏览器中打开」→ 复制全文粘贴。")
+        return _build_result("url",
+                             f"[公众号文章 - 内容需JS渲染]\n{full_text}",
+                             url, "wechat_mp", note)
+    except Exception as e:
+        return _build_result("url",
+                             f"[公众号文章 - 无法抓取] {e}",
+                             url, "wechat_mp",
+                             f"⚠️ 公众号需要 JS 渲染，建议手动复制内容。")
 
 
 def _ingest_generic(url: str) -> dict:
-    """通用网页抓取"""
+    """通用网页抓取（v2：增强内容提取）"""
     try:
         html = _fetch_html(url)
         soup = BeautifulSoup(html, "html.parser")
 
-        # 优先提取 meta 信息
-        title = ""
-        og_title = soup.find("meta", property="og:title")
-        if og_title:
-            title = og_title.get("content", "")
+        # 标题提取优先级
+        title = (
+            _extract_meta(soup, "og:title")
+            or _extract_meta(soup, "twitter:title")
+        )
         if not title:
             t = soup.find("title")
             if t:
-                title = t.get_text(strip=True)
+                raw_title = t.get_text(strip=True)
+                # 清洗常见分隔符
+                title = re.sub(r"\s*[-–—|｜]\s*.*$", "", raw_title)
 
-        desc = ""
-        og_desc = soup.find("meta", property="og:description")
-        if og_desc:
-            desc = og_desc.get("content", "")
-        if not desc:
-            dm = soup.find("meta", attrs={"name": "description"})
-            if dm:
-                desc = dm.get("content", "")
+        # 摘要提取
+        desc = (
+            _extract_meta(soup, "og:description")
+            or _extract_meta(soup, "description", "description")
+        )
 
-        # 正文：优先找 <article>/<main>，再降级到 <body>
+        # 正文提取：按优先级选择容器
         body = ""
-        for sel in ["article", "main", "[role='main']", ".post-content", ".article-content"]:
+        body_selectors = [
+            "article", "main", "[role='main']",
+            ".post-content", ".article-content", ".entry-content",
+            ".content", "#content", ".markdown-body",
+            ".prose", "[class*='post']", "[class*='article']",
+        ]
+        for sel in body_selectors:
             el = soup.select_one(sel)
             if el:
-                body = el.get_text(separator="\n", strip=True)
-                break
+                text = el.get_text(separator="\n", strip=True)
+                if len(text) > 100:
+                    body = text
+                    break
+
         if not body:
             body = _extract_clean_text(html)
 
-        full_text = f"{title}\n{desc}\n{body}".strip()
-        return {"type": "url", "raw_content": full_text, "source_path": url,
-                "platform": "generic"}
+        # 组装
+        parts = [p for p in [title, desc] if p]
+        if body:
+            parts.append(body)
+        full_text = "\n\n".join(parts).strip()
+
+        return _build_result("url", full_text, url, "generic")
     except Exception as e:
-        return {"type": "url", "raw_content": f"[抓取失败] {e}", "source_path": url,
-                "platform": "generic"}
+        return _build_result("url", f"[抓取失败] {type(e).__name__}: {e}",
+                             url, "generic")
 
 
 def _fallback_generic(url: str, reason: str) -> dict:
     """平台专用抓取失败时，降级到通用抓取"""
     try:
         result = _ingest_generic(url)
+        if result.get("note"):
+            result["note"] = f"{reason}; {result['note']}"
+        else:
+            result["note"] = reason
         return result
     except Exception:
-        return {"type": "url", "raw_content": f"[{reason}]", "source_path": url,
-                "platform": "generic"}
+        return _build_result("url", f"[{reason}]", url, "generic")
 
 
 # ──────────────────────────────────────────────────────────
 # 统一入口
 # ──────────────────────────────────────────────────────────
 
+_HANDLERS = {
+    "xiaohongshu": _ingest_xiaohongshu,
+    "douban":       _ingest_douban,
+    "wechat_mp":    _ingest_wechat_mp,
+}
+
+
 def ingest(source: str) -> dict:
     """
     统一入口: 自动识别输入类型
-    返回: {"type": "url|file|text", "raw_content": str, "source_path": str, "platform": str}
+
+    返回: {
+        "type": "url|file|text",
+        "raw_content": str,
+        "source_path": str,
+        "source_url": str,
+        "platform": str,
+        "note": str (可选，提示信息)
+    }
     """
     # 1. 判断是否是 URL
     if source.startswith(("http://", "https://")):
         platform = _detect_platform(source)
-
-        if platform == "xiaohongshu":
-            return _ingest_xiaohongshu(source)
-        elif platform == "douban":
-            return _ingest_douban(source)
-        elif platform == "wechat_mp":
-            return _ingest_wechat_mp(source)
+        handler = _HANDLERS.get(platform)
+        if handler:
+            return handler(source)
         else:
             return _ingest_generic(source)
 
-    # 2. 判断是否是本地文件路径（超过500字符或含换行直接当文本）
+    # 2. 长文本（>500 字符或有换行）直接作为文本处理
     if len(source) > 500 or "\n" in source:
-        return {"type": "text", "raw_content": source, "source_path": "", "platform": "text"}
+        return _build_result("text", source, "", "text")
 
+    # 3. 判断是否是本地文件路径
     source_path = Path(source)
     if source_path.exists() and source_path.is_file():
         return _ingest_file(str(source_path.resolve()))
 
-    # 3. 默认作为纯文本
-    return {"type": "text", "raw_content": source, "source_path": "", "platform": "text"}
+    # 4. 默认作为纯文本
+    return _build_result("text", source, "", "text")
 
 
 def _ingest_file(filepath: str) -> dict:
+    """文件采集"""
     ext = Path(filepath).suffix.lower()
 
-    if ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]:
+    if ext in [".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"]:
         try:
             text = image_to_text(filepath)
-            return {"type": "file", "raw_content": text, "source_path": filepath, "platform": "file"}
+            return _build_result("file", text, filepath, "file")
         except Exception as e:
-            return {"type": "file", "raw_content": f"[识别失败] {e}", "source_path": filepath, "platform": "file"}
+            return _build_result("file", f"[OCR失败] {e}", filepath, "file")
 
-    elif ext == ".txt":
+    elif ext in [".txt", ".md"]:
         with open(filepath, "r", encoding="utf-8") as f:
-            return {"type": "file", "raw_content": f.read(), "source_path": filepath, "platform": "file"}
+            return _build_result("file", f.read(), filepath, "file")
 
     else:
-        return {"type": "file", "raw_content": f"[不支持: {ext}]", "source_path": filepath, "platform": "file"}
+        return _build_result("file", f"[不支持格式: {ext}]", filepath, "file")
