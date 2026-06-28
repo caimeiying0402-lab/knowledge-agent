@@ -123,6 +123,7 @@ PYTHONPATH=src python src/tests/test_harness.py
 | `NEXT_STEPS.md` | Claude Code | 任务拆解和操作指南 |
 | `ROADMAP.md` | **你** | 进度跟踪 |
 | `README.md` | **你** | 项目说明 |
+| `IDEAS.md` | **用户（caimeiying）** | 想法池，只读勿改 |
 | `TRARE_ONBOARDING.md` | Claude Code | 本文档，你的入场指南 |
 | `src/main.py` | **你** | ETL 主流程 |
 | `src/skills/*.py` | **你** | 各 Skill 实现 |

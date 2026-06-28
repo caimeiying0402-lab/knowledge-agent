@@ -207,6 +207,7 @@
 |------|--------|------|
 | `ARCHITECTURE.md` | **Claude Code** | 架构设计权威文件，Trae 只读 |
 | `NEXT_STEPS.md` | Claude Code | 任务拆解和操作说明，Trae 参考 |
+| `IDEAS.md` | **用户（caimeiying）** | 想法池，Claude Code 和 Trae 只读 |
 | `ROADMAP.md` | **Trae** | 进度跟踪，Claude Code 只读 |
 | `README.md` | Trae | 项目说明，随进度更新 |
 | `src/` 下所有 `.py` | **Trae** | 代码实现，Claude Code 只读 |
