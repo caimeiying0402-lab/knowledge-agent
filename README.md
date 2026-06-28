@@ -23,7 +23,9 @@ PYTHONPATH=src python src/main.py
 | [ROADMAP.md](./ROADMAP.md) | 进度看板（Trae 维护） |
 | [NEXT_STEPS.md](./NEXT_STEPS.md) | 后续操作指南 |
 | [TRAE_ONBOARDING.md](./TRAE_ONBOARDING.md) | Trae 入场指南 |
-| [knowledge_schema.md](./knowledge_schema.md) | 知识条目字段定义 |
+| [docs/knowledge_schema.md](./docs/knowledge_schema.md) | 知识条目字段定义 |
+| [docs/WECHAT_SETUP.md](./docs/WECHAT_SETUP.md) | 企微自建应用接入指南 |
+| [docs/WECHAT_KF_SETUP.md](./docs/WECHAT_KF_SETUP.md) | 微信客服接入指南 |
 
 ## 协作分工
 

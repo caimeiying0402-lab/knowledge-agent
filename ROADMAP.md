@@ -1,87 +1,120 @@
-# Knowledge Agent — 项目进度看板
+# Personal AI OS — 项目进度看板
 
-> **📌 此文件由 Trae 管理。** Claude Code 只读，不直接修改。
+> **📌 此文件由 Trae 管理。** Claude Code 只读。
 > Trae 负责更新各任务的实际进度、完成状态和遇到的问题。
 >
 > 最后更新：2026-06-28
+> 战略文档：`/Users/caimeiying/AI-Agent-Lab/roadmap_matrix.md`
 
 ---
 
-## 进度总览
+## 一、四大 Agent 进度总览
 
-| 架构层 | 完成度 | 状态 |
-|--------|--------|------|
-| 第一层：数据采集层 | 85% | 🟡 核心通路打通，JS渲染网站待Playwright方案 |
-| 第二层：数据处理层 | 90% | 🟢 v2完成，19分类体系运行中 |
-| 第三层：知识层 | 25% | 🔴 仅飞书多维表格，缺SQLite和Chroma |
-| 第四层：Agent层 | 30% | 🔴 仅Knowledge Agent，缺Career/Discovery |
-| 第五层：学习层 | 0% | 🔴 未开工 |
-| 第六层：推荐层 | 0% | 🔴 未开工 |
+| Agent | 完成度 | 状态 | 下一里程碑 |
+|-------|--------|------|-----------|
+| Knowledge Agent | ~40% | 🟡 ETL 主链路通，知识库层未建 | SQLite + Chroma + RAG |
+| Job Agent | 0% | ⬜ 未启动 | 简历解析 MVP |
+| 自动记账 Agent | 0% | ⬜ 未启动 | 账单 CSV 解析 |
+| Rule Mining Agent | 0% | ⬜ 未启动 | — |
 
 ---
 
-## ✅ 已完成
+## 二、Knowledge Agent 逐模块进度
 
-| 模块 | 状态 | 说明 |
+### 消息入口
+
+| 模块 | 状态 | 备注 |
 |------|------|------|
-| 文字采集 | ✅ | 任意文本输入，直接透传 |
-| 图片OCR | ✅ | PaddleOCR本地引擎，零成本 |
-| AI摘要 v2 | ✅ | DeepSeek，标题+摘要+19分类+highlights+source_quality+actionable |
-| 飞书入库 | ✅ | 11字段自动写入多维表格 |
-| 通用网页抓取 | ✅ | Wikipedia/少数派/36氪等可达网站 |
-| 小红书 | ⚠️ | `__INITIAL_STATE__`解析，仅元数据（JS渲染限制） |
-| 公众号 | ⚠️ | HTML解析+og降级，通常仅标题（JS渲染限制） |
-| 豆瓣 | ⚠️ | PC版+移动版双路径，严格反爬 |
-| 企微自建应用 | ✅ | 企微成员发消息→Webhook→ETL |
-| 微信客服轮询 | ⚠️ | sync_msg API主动拉取，受45009限流影响 |
-| 微信客服Webhook | ✅ | 回调推送模式，需Cloudflare隧道 |
-| iCloud 监听 | ✅ | watchdog框架已就绪 |
-| 全链路测试 | ✅ | test_harness.py 覆盖5层测试 |
-| GitHub托管 | ✅ | 私有仓库，代码已推送 |
+| 企微自建应用 Webhook | ✅ | Flask :5001 + Cloudflare Tunnel |
+| 微信客服轮询 | ⚠️ | sync_msg API，45009 限流，间隔已调到 30s |
+| iCloud 文本/URL 监听 | 🟡 | watchdog 框架已写，待配 iPhone 快捷指令 |
+| iCloud 图片 → OCR 接线 | 🟡 | 图片移入 inbox 但未接 OCR → summary |
+| 微信 SQLite 历史回溯 | 🟡 | 逆向框架已写，待真机联调 |
+| 手动 CLI | ✅ | `python src/main.py` |
 
----
+### 采集 → 处理 → 存储
 
-## 🔴 待实现（按优先级）
-
-### P1 — 阻塞性任务
-
-| 任务 | 状态 | 负责 | 目标 |
-|------|------|------|------|
-| Headless 浏览器（Playwright） | 🔴 未开始 | Trae | 解决小红书/公众号JS渲染抓取 |
-
-### P2 — 基础能力
-
-| 任务 | 状态 | 负责 | 目标 |
-|------|------|------|------|
-| SQLite 本地知识库 | 🔴 未开始 | Trae | 离线存储+快速查询 |
-| Chroma 向量库 + RAG | 🔴 未开始 | Trae | Embedding+语义检索 |
-
-### P3 — 扩展能力
-
-| 任务 | 状态 | 负责 | 目标 |
-|------|------|------|------|
-| Career Agent | 🔴 未开始 | Trae | 简历解析+岗位匹配 |
-| Discovery Agent | 🔴 未开始 | Trae | 规则挖掘+知识地图 |
-| Learning Layer | 🔴 未开始 | Trae | 用户行为采集+偏好数据集 |
-| Recommendation Layer | 🔴 未开始 | Trae | 智能推荐引擎 |
-
----
-
-## ⚠️ 已知问题
-
-| 问题 | 影响 | 状态 |
+| 模块 | 状态 | 备注 |
 |------|------|------|
-| 小红书内容<50字 | 无法获取完整笔记 | P1-1 可解决 |
-| 公众号仅标题 | 无法获取文章正文 | P1-1 可解决 |
-| 微信客服45009限流 | poller模式停摆 | 已调间隔到30s，仍需观察 |
-| 知乎/百度百科403 | 无法抓取 | 暂无解法 |
-| 豆瓣严格反爬 | 需手动粘贴内容 | 暂无解法 |
+| 文字采集 | ✅ | 任意文本透传 |
+| 通用网页抓取 | ✅ | Wikipedia/少数派/36氪 可达 |
+| 小红书抓取 | ⚠️ | INITIAL_STATE 解析，仅元数据（JS 渲染） |
+| 公众号抓取 | ⚠️ | HTML + og 降级，通常仅标题 |
+| 豆瓣抓取 | ❌ | 严格反爬 |
+| 知乎/百度百科 | ❌ | 403 |
+| 图片 OCR | ✅ | PaddleOCR 本地引擎，零成本 |
+| AI 摘要 v2 | ✅ | DeepSeek，19 分类 + 8 字段结构化输出 |
+| 飞书多维表格 | ✅ | 11 字段自动写入 |
+
+### 知识库层
+
+| 模块 | 状态 | 备注 |
+|------|------|------|
+| SQLite 本地存储 | 🔴 待实现 | P2 |
+| Chroma 向量库 | 🔴 待实现 | P2 |
+| RAG 语义检索 | 🔴 待实现 | P2 |
+| 用户行为采集 | 🔴 待实现 | P4 |
 
 ---
 
-## 📝 讨论区
+## 三、Job Agent 进度
 
-> 如果 Trae 认为架构需要调整（如技术选型、优先级重排、新增模块），在此记录讨论点。
-> Claude Code 会定期 Review 此区域并更新 ARCHITECTURE.md。
+| 模块 | 状态 | 备注 |
+|------|------|------|
+| 简历解析 Skill | ⬜ | DeepSeek 结构化提取 |
+| JD 采集 Skill | ⬜ | 复用 ingestion |
+| 匹配评分 Skill | ⬜ | 语义匹配 + 硬条件 |
+| 话术生成 Skill | ⬜ | 个性化打招呼文案 |
+
+---
+
+## 四、自动记账 Agent 进度
+
+| 模块 | 状态 | 备注 |
+|------|------|------|
+| 账单 CSV 解析 | ⬜ | 支付宝/微信导出格式 |
+| 交易分类 | ⬜ | 商户名 → 科目映射 |
+| 记账写入 | ⬜ | 随手记无公开 API，核心卡点 |
+
+---
+
+## 五、Rule Mining Agent 进度
+
+| 模块 | 状态 | 备注 |
+|------|------|------|
+| 行为数据采集 | ⬜ | 点击/收藏/忽略埋点 |
+| 规则挖掘引擎 | ⬜ | Apriori/FP-Growth |
+| 推荐引擎 | ⬜ | 向量召回 + 规则重排 |
+
+---
+
+## 六、当前待办（按优先级）
+
+| 优先级 | 任务 | 所属 Agent | 负责 |
+|--------|------|-----------|------|
+| P0 | 配置 iPhone 快捷指令（文本/URL/图片三条） | Knowledge | 用户 + Claude Code |
+| P1 | iCloud 图片 → OCR → summary → feishu 接线 | Knowledge | Trae |
+| P1 | Headless 浏览器（Playwright） | Knowledge | Trae |
+| P2 | SQLite 本地落库 | Knowledge | Trae |
+| P2 | Chroma 向量化 + RAG 检索 | Knowledge | Trae |
+| P3 | Job Agent MVP（简历解析 + JD 匹配） | Job | Trae |
+
+---
+
+## 七、已知问题
+
+| 问题 | 影响 | 解法 |
+|------|------|------|
+| 小红书/公众号 JS 渲染 | 内容不完整 | P1 Playwright |
+| 微信客服 45009 限流 | poller 停摆 | 增大间隔 or 改用 Webhook |
+| 豆瓣/知乎反爬 | 无法自动抓取 | 暂无解法，手动粘贴 |
+| 随手记无 API | 记账 Agent 卡点 | 模板导入 or computer-use |
+
+---
+
+## 八、讨论区
+
+> Trae 在此记录架构调整建议或实现中遇到的问题。
+> Claude Code 上线后会 Review。
 
 （暂无）

@@ -1,151 +1,128 @@
 # Trae 入场指南
 
-> 写给 Trae：你要做什么、怎么开始、和 Claude Code 怎么分工。
-> Claude Code 写于 2026-06-28。
+> 写给 Trae：项目全貌、分工规则、第一个任务。
+> Claude Code 写于 2026-06-28，基于 `/Users/caimeiying/AI-Agent-Lab/roadmap_matrix.md`
 
 ---
 
 ## 一、这个项目是什么
 
-**Personal AI OS**（又名 Knowledge Agent），一个个人知识管理 + AI Agent 系统。
+**Personal AI OS** — 多 Agent 协作系统，围绕四个场景：
 
-核心功能：用户通过微信/企微发文字、图片、链接 → 自动抓取内容 → AI 提取摘要和标签 → 存入飞书多维表格 → 未来支持语义检索和智能推荐。
+| Agent | 定位 | 状态 |
+|-------|------|------|
+| **Knowledge Agent** | 多端采集 → AI 处理 → 飞书知识库 → 可检索 | 🟡 ETL 主链路通 |
+| **Job Agent** | 简历 × JD 匹配 + 打招呼话术 | ⬜ 未启动 |
+| **自动记账 Agent** | 支付宝/微信账单 → 随手记科目 | ⬜ 未启动 |
+| **Rule Mining Agent** | 行为数据 → 规则挖掘 → 个性化推荐 | ⬜ 未启动 |
+
+**当前阶段：全力建设 Knowledge Agent。** 其余三个 Agent 暂不碰。
 
 **GitHub：** `git@github.com:caimeiying0402-lab/knowledge-agent.git`
 **本地：** `/Users/caimeiying/AI-Agent-Lab/knowledge-agent`
 **分支：** `main`
+**战略文档：** `/Users/caimeiying/AI-Agent-Lab/roadmap_matrix.md`（只读参考，了解全貌用）
 
 ---
 
-## 二、当前进度速览
+## 二、Knowledge Agent 当前进度
 
-六层架构，目前处于早期阶段：
-
-| 层 | 完成度 | 一句话 |
-|---|--------|--------|
-| 采集 | 85% | 文字/URL/图片/企微都能进，但小红书和公众号被 JS 渲染卡住 |
-| 处理 | 90% | DeepSeek 摘要 v2 很稳，19 分类 + 8 字段结构化输出 |
-| 知识 | 25% | 只有飞书多维表格，缺本地库和向量库 |
-| Agent | 30% | 只有 Knowledge Agent，Career/Discovery 还没影 |
-| 学习 | 0% | — |
-| 推荐 | 0% | — |
-
----
-
-## 三、你要做什么
-
-按优先级，你的第一个任务是 **P1-1：Headless 浏览器**。完成后再推进 P2-1、P2-2。
-
-**详细的操作步骤在 `NEXT_STEPS.md`**，里面写了精确的文件路径、函数签名、代码片段、验证命令。你不需要自己设计方案，照着 NEXT_STEPS.md 实现即可。
+| 模块 | 状态 |
+|------|------|
+| 文字/URL/图片采集 → AI 摘要 → 飞书入库 | ✅ 全链路通 |
+| 企微自建应用消息接收 | ✅ |
+| 微信客服轮询 | ⚠️ 45009 限流 |
+| iCloud 文件监听 | 🟡 框架已写，待配 iPhone 快捷指令 |
+| 小红书/公众号 JS 抓取 | ❌ 仅元数据，你的第一个任务 |
+| SQLite 本地存储 | ❌ |
+| Chroma 向量检索 | ❌ |
 
 ---
 
-## 四、和 Claude Code 的分工
-
-**非常重要：我们各管一摊，互不干扰。**
+## 三、和 Claude Code 的分工
 
 | | Claude Code | Trae（你） |
 |---|-------------|-----------|
-| **管什么** | 架构设计、方向决策 | 代码实现、进度推进 |
-| **写什么文件** | ARCHITECTURE.md、NEXT_STEPS.md | src/ 下所有 .py、ROADMAP.md |
-| **不动什么** | src/ 下的 .py 代码 | ARCHITECTURE.md（只读） |
+| **管什么** | 架构设计、方向决策、任务拆解 | 代码实现、进度推进 |
+| **写什么** | ARCHITECTURE.md、NEXT_STEPS.md、TRAE_ONBOARDING.md | src/ 全部 .py、ROADMAP.md、README.md |
+| **不动什么** | src/ 代码、ROADMAP.md | ARCHITECTURE.md（只读） |
 | **协商的** | — | prompts/summary_prompt.txt |
 
 **具体规则：**
 
-1. **你管实现，我管设计。** NEXT_STEPS.md 告诉你做什么，你决定怎么写代码。你觉得设计方案有问题，在 ROADMAP.md 的"讨论区"写下来，我会来 Review。
+1. **你管实现。** NEXT_STEPS.md 告诉你做什么，你决定怎么写。觉得方案有问题，写在 ROADMAP.md 讨论区。
 
-2. **ROADMAP.md 是你的。** 每完成一个任务，更新状态和完成度百分比。遇到阻塞问题也记进去。
+2. **ROADMAP.md 是你的。** 完成任务更新状态和百分比。遇到阻塞记进去。
 
-3. **ARCHITECTURE.md 是我的。** 你只读不写。如果架构改了，我会自己更新。
+3. **ARCHITECTURE.md 是我的。** 只读。
 
-4. **代码在 src/ 下。** 新增 Skill 放 `src/skills/`，知识层放 `src/knowledge/`，Agent 放 `src/agents/`。
+4. **代码规范：** 新 Skill → `src/skills/`，知识层 → `src/knowledge/`，Agent → `src/agents/`。增量改动，不破坏已有功能。重量级资源（浏览器、OCR、Embedding模型）用单例复用。
 
-5. **不破坏已有功能。** 你的改动是增量的。现有代码（main.py、ingestion_skill.py、summary_skill.py 等）可以修改但必须保持向后兼容。
-
-6. **README.md 随进度更新。** 项目说明文档你来维护。
+5. **README.md 你来维护。**
 
 ---
 
-## 五、快速上手
+## 四、快速上手
 
 ```bash
-# 1. 克隆仓库
 git clone git@github.com:caimeiying0402-lab/knowledge-agent.git
 cd knowledge-agent
-
-# 2. 创建虚拟环境
-python3.12 -m venv .venv
-source .venv/bin/activate
-
-# 3. 安装依赖
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# 4. 配置环境变量
-cp config/.env.example config/.env
-# 编辑 config/.env，填入真实 API Key
-
-# 5. 验证环境
-PYTHONPATH=src python src/main.py
-
-# 6. 跑测试
-PYTHONPATH=src python src/tests/test_harness.py
+cp config/.env.example config/.env   # 编辑填入真实 API Key
+PYTHONPATH=src python src/main.py    # 跑通全链路
+PYTHONPATH=src python src/tests/test_harness.py  # 跑测试
 ```
 
 **关键环境变量（config/.env）：**
 - `DEEPSEEK_API_KEY` — AI 摘要（必填）
-- `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_APP_TOKEN` / `FEISHU_TABLE_ID` — 飞书（测试用）
-- `WECOM_CORP_ID` / `WECOM_CORP_SECRET` — 企微（可选，Webhook 用）
+- `FEISHU_APP_ID/SECRET/TOKEN/TABLE_ID` — 飞书入库
+- `WECOM_CORP_ID/CORP_SECRET` — 企微接入（可选）
 
 ---
 
-## 六、你的第一个任务：P1-1 Headless 浏览器
+## 五、你的第一个任务：P1 Headless 浏览器
 
-打开 `NEXT_STEPS.md`，找到 **P1-1 章节**，按步骤执行：
+打开 `NEXT_STEPS.md`，找到 **P1-1 章节**，按步骤：
 
-1. 安装 Playwright → `pip install playwright && playwright install chromium`
-2. 创建 `src/skills/browser_skill.py`（代码在 NEXT_STEPS.md 里有）
-3. 修改 `src/skills/ingestion_skill.py`（插入位置和代码都有标注）
-4. 验证：用小红书和公众号 URL 测试，确认内容长度大幅提升
+1. `pip install playwright && playwright install chromium`
+2. 创建 `src/skills/browser_skill.py`
+3. 修改 `src/skills/ingestion_skill.py`（小红书和公众号两处插入 Playwright 降级）
+4. 用真实 URL 验证内容长度显著提升
 
-做完后：
-- 更新 `ROADMAP.md`，把 P1-1 标记为 ✅ 完成
-- 更新各层完成度百分比
-- 提交代码并 push
+完成后更新 ROADMAP.md，标记完成并 push。
 
 ---
 
-## 七、Key Files Map
+## 六、完整文件地图
 
-| 文件 | 谁管 | 干什么 |
-|------|------|--------|
-| `ARCHITECTURE.md` | Claude Code | 架构设计权威文档 |
-| `NEXT_STEPS.md` | Claude Code | 任务拆解和操作指南 |
+| 文件 | 谁管 | 说明 |
+|------|------|------|
+| `ARCHITECTURE.md` | Claude Code | 4 Agent 架构设计 |
+| `NEXT_STEPS.md` | Claude Code | P1-P3 详细操作步骤 |
+| `TRAE_ONBOARDING.md` | Claude Code | 本文档 |
+| `IDEAS.md` | 用户 | 想法池，只读勿改 |
+| **─ 以下是你的领域 ─** | | |
 | `ROADMAP.md` | **你** | 进度跟踪 |
 | `README.md` | **你** | 项目说明 |
-| `IDEAS.md` | **用户（caimeiying）** | 想法池，只读勿改 |
-| `TRAE_ONBOARDING.md` | Claude Code | 本文档，你的入场指南 |
 | `src/main.py` | **你** | ETL 主流程 |
 | `src/skills/*.py` | **你** | 各 Skill 实现 |
-| `src/models/*.py` | **你** | API 调用封装 |
+| `src/models/*.py` | **你** | API 封装 |
 | `src/tests/*.py` | **你** | 测试代码 |
-| `prompts/summary_prompt.txt` | 协商 | DeepSeek Prompt |
+| `src/knowledge/` | **你** | 知识层（SQLite/Chroma/RAG） |
+| `src/agents/` | **你** | 其他 Agent（Job/记账/Rule Mining） |
+| `prompts/summary_prompt.txt` | 协商 | Prompt 调优 |
 | `config/.env.example` | **你** | 环境变量模板 |
 
 ---
 
-## 八、工作流建议
+## 七、工作流
 
 ```
-1. 阅读 NEXT_STEPS.md 了解下一个任务
-2. 实现代码（src/ 下）
+1. 读 NEXT_STEPS.md → 了解当前任务
+2. 写代码（src/ 下）
 3. 本地验证通过
-4. 更新 ROADMAP.md（标记完成、更新百分比）
-5. 更新 README.md（如果项目面貌有变化）
-6. git commit & push
-7. 如果遇到架构问题 → 写在 ROADMAP.md 讨论区
+4. 更新 ROADMAP.md
+5. git commit & push
+6. 遇到架构问题 → ROADMAP.md 讨论区
 ```
-
----
-
-开始吧。有问题写在 ROADMAP.md 讨论区，Claude Code 下次上线会看。

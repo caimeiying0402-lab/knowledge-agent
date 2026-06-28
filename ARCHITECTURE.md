@@ -1,221 +1,283 @@
 # Personal AI OS — 架构设计
 
-> **📌 此文件由 Claude Code 管理。** Trae/Codex 请勿直接修改此文件。
-> 如需调整架构设计，在 ROADMAP.md 中提交讨论，或通过 Claude Code 发起变更。
+> **📌 此文件由 Claude Code 管理。** Trae/Codex 请勿直接修改。
+> 如需调整架构，在 ROADMAP.md 讨论区提交，或通过 Claude Code 发起变更。
 >
 > 最后更新：2026-06-28
+> 战略文档：`/Users/caimeiying/AI-Agent-Lab/roadmap_matrix.md`
 
 ---
 
-## 总体架构（六层）
+## 一、系统定位
+
+Personal AI OS = 多 Agent 协作系统，围绕个人知识、求职、记账三大场景，逐步加入自学习和推荐能力。
+
+**四个核心 Agent：**
+
+| Agent | 定位 | 阶段 | 状态 |
+|-------|------|------|------|
+| Knowledge Agent | 非结构化信息 → 结构化知识资产（多端采集→AI处理→飞书库→可检索） | 主线 / 第一阶段 | 🟡 ETL 主链路已通 |
+| Job Agent | 简历 × JD 匹配 → RAG 推荐 + 打招呼话术生成 | 第二阶段 | ⬜ 未启动 |
+| 自动记账 Agent | 支付宝/微信账单 → 自动登记随手记指定科目 | 并行工具线 | ⬜ 未启动 |
+| Rule Mining Agent | 历史行为数据 → 规则挖掘 + 个性化推荐 | 第三阶段 | ⬜ 未启动 |
+
+---
+
+## 二、总体架构图
 
 ```
-用户输入（文字 / 图片 / URL / 企微消息 / 微信客服）
-                │
-┌───────────────┴───────────────┐
-│  第一层：数据采集层              │  ← 85% 完成
-│  ingestion_skill.py           │     JS渲染网站待Playwright方案
-│  multimodal_skill.py (OCR)    │
-│  wechat_webhook.py / poller   │
-│  icloud_skill.py              │
-└───────────────┬───────────────┘
-                │ raw_content + platform
-                ▼
-┌───────────────┴───────────────┐
-│  第二层：数据处理层              │  ← 90% 完成
-│  summary_skill.py (DeepSeek)  │     v2: 19分类+结构化字段
-│  parser: BeautifulSoup4       │
-│  OCR: PaddleOCR 本地引擎       │
-└───────────────┬───────────────┘
-                │ Structured Data (8字段)
-                ▼
-┌───────────────┴───────────────┐
-│  第三层：知识层                 │  ← 25% 完成
-│  飞书多维表格 ✅                │     SQLite + Chroma 待实现
-│  SQLite 本地库 🔴              │
-│  Chroma 向量库 🔴              │
-└───────────────┬───────────────┘
-                │
-                ▼
-┌───────────────┴───────────────┐
-│  第四层：Agent 层              │  ← 30% 完成
-│  Knowledge Agent ✅           │     Career + Discovery 待实现
-│  Career Agent 🔴              │
-│  Discovery Agent 🔴           │
-└───────────────┬───────────────┘
-                │
-                ▼
-┌───────────────┴───────────────┐
-│  第五层：学习层                 │  ← 0% 完成
-│  用户行为采集 + 偏好数据集       │
-└───────────────┬───────────────┘
-                │
-                ▼
-┌───────────────┴───────────────┐
-│  第六层：推荐层                 │  ← 0% 完成
-│  基于标签+行为+知识库的智能推荐   │
-└───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Personal AI OS                         │
+├─────────────────────────────────────────────────────────────┤
+│  ┌───────────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐ │
+│  │Knowledge Agent│  │Job Agent │  │记账 Agent │  │ Rule   │ │
+│  │   🟡 主线     │  │  ⬜ P3   │  │  ⬜ 工具  │  │Mining  │ │
+│  │               │  │          │  │          │  │  ⬜ P4  │ │
+│  └───────┬───────┘  └────┬─────┘  └────┬─────┘  └───┬────┘ │
+│          │               │             │            │       │
+│  ┌───────┴───────┐       │             │            │       │
+│  │  共享基础设施   │◄──────┴─────────────┴────────────┘       │
+│  │               │                                           │
+│  │ • DeepSeek API（AI 引擎）                                  │
+│  │ • SQLite（本地真相源）                                     │
+│  │ • Chroma（向量检索）                                       │
+│  │ • 飞书多维表格（展示层）                                    │
+│  │ • 企微/微信客服（消息入口）                                  │
+│  └───────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 各层详细设计
+## 三、Knowledge Agent（主线，Phase 1）
 
-### 第一层：数据采集层
+### 3.1 数据流
 
-**核心文件：** `src/skills/ingestion_skill.py`
+```
+iPhone 快捷指令 ──→ iCloud Drive ──→ watchdog ──┐
+企微消息 ──→ Webhook (:5001) ──────────────────┤
+微信客服 ──→ sync_msg 轮询 ─────────────────────┤
+手动 CLI ──→ python main.py ────────────────────┤
+                                                  ▼
+┌──────────────────────────────────────────────────────┐
+│                  ingest()                             │
+│  平台检测 → 专用抓取器 or 通用抓取                      │
+│  图片 → PaddleOCR 本地识别                            │
+│  输出：raw_content + platform                        │
+└──────────────────────┬───────────────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│                summarize()                            │
+│  DeepSeek Chat API                                   │
+│  输出：title / summary / highlights / category /     │
+│        tags / source_quality / actionable             │
+│  19 分类体系 + 平台感知 Prompt                         │
+└──────────────────────┬───────────────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│  双写存储                                             │
+│  ├── 飞书多维表格（主展示，11字段）                      │
+│  └── SQLite 本地库（真相源，离线可用）← 待实现          │
+└──────────────────────┬───────────────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│  向量化 + 检索 ← 待实现                                │
+│  ├── Embedding（DeepSeek or bge-local）               │
+│  ├── Chroma 向量存储                                   │
+│  └── RAG 语义检索                                      │
+└──────────────────────────────────────────────────────┘
+```
 
-**输入类型与路由：**
-- URL（http/https）→ 平台检测 → 专用抓取器或通用抓取器
-- 长文本（>500字符或含换行）→ 直接透传
-- 本地文件路径 → 按扩展名分发（图片→OCR，txt/md→直接读取）
-- 企微自建应用消息 → `wechat_webhook.py` → ETL
-- 微信客服消息 → `wechat_kf_poller.py` → ETL
+### 3.2 消息入口矩阵
 
-**平台抓取能力矩阵：**
+| 入口 | 技术方案 | 消息类型 | 状态 |
+|------|---------|---------|------|
+| 企微自建应用 | Flask Webhook + Cloudflare Tunnel | 文字/链接/图片 | ✅ |
+| 微信客服（主动拉取） | sync_msg API 轮询 | 文字/链接/图片/文件 | ⚠️ 45009 限流 |
+| iCloud 文本/URL | watchdog + 快捷指令 JSON | 文本/URL | 🟡 待配置快捷指令 |
+| iCloud 图片 | watchdog → inbox → OCR | 图片 | 🟡 待接线 |
+| 微信历史回溯 | SQLite 逆向 → 导入 | 历史消息 | 🟡 待真机联调 |
+| 手动 CLI | `python src/main.py` | 文本/URL/文件 | ✅ |
 
-| 平台 | 状态 | 抓取方式 | 说明 |
-|------|------|---------|------|
-| Wikipedia | ✅ | requests + BS4 | ~62K 字符 |
-| 少数派 | ✅ | requests + BS4 | ~1.3K 字符 |
-| 36氪 | ✅ | requests + BS4 | 内容 OK |
-| 小红书 | ⚠️ | INITIAL_STATE 解析 | JS 渲染，仅元数据 |
-| 公众号 | ⚠️ | HTML 解析 + og 降级 | JS 渲染，通常仅标题 |
-| 豆瓣 | ❌ | PC版 + 移动版双路径 | 严格反爬 |
-| 知乎 | ❌ | — | 403 |
-| 百度百科 | ❌ | — | 403 |
+### 3.3 平台抓取能力
 
-**待解决：** P1-1 Headless 浏览器（Playwright）方案可解决小红书和公众号的 JS 渲染问题。
+| 平台 | 状态 | 方式 | 说明 |
+|------|------|------|------|
+| Wikipedia | ✅ | requests + BS4 | |
+| 少数派/36氪 | ✅ | requests + BS4 | |
+| 小红书 | ⚠️ | INITIAL_STATE 解析 | JS 渲染，仅元数据 → P1 Playwright |
+| 公众号 | ⚠️ | HTML + og 降级 | JS 渲染，仅标题 → P1 Playwright |
+| 豆瓣 | ❌ | 双路径尝试 | 严格反爬 |
+| 知乎/百度百科 | ❌ | — | 403 |
 
 ---
 
-### 第二层：数据处理层
+## 四、Job Agent（Phase 2）
 
-**核心文件：**
-- `src/skills/summary_skill.py` — DeepSeek AI 摘要引擎
-- `src/skills/multimodal_skill.py` — PaddleOCR 本地 OCR
-- `prompts/summary_prompt.txt` — 摘要 Prompt（19分类体系）
+### 4.1 数据流
 
-**输出字段（8个）：**
-| 字段 | 类型 | 说明 |
+```
+简历文件（PDF/docx/文本）
+         │
+         ▼
+┌─────────────────────────┐
+│  Resume Skill           │
+│  DeepSeek 结构化提取     │
+│  输出：{skills, exp,    │
+│         education, ...} │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐      ┌──────────────────────┐
+│  Match Skill            │◄─────│  Job Search Skill    │
+│  DeepSeek 对比评分       │      │  复用 ingestion 抓取  │
+│  输出：匹配度 + 缺口      │      │  BOSS/猎聘 JD        │
+└────────────┬────────────┘      └──────────────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│  Outreach Skill         │
+│  个性化打招呼文案生成     │
+│  输出：话术文本           │
+└─────────────────────────┘
+```
+
+### 4.2 技能清单
+
+| Skill | 功能 | 输入 | 输出 |
+|-------|------|------|------|
+| Resume Skill | 简历解析 | PDF/docx/文本 | 结构化简历 JSON |
+| Job Search Skill | JD 采集 | URL/文本 | 结构化 JD JSON |
+| Match Skill | 匹配评分 | 简历 + JD | 匹配度(0-100) + 缺口列表 |
+| Outreach Skill | 话术生成 | 匹配结果 | 个性化打招呼文案 |
+
+### 4.3 待决策
+
+- 招聘平台是模拟浏览器还是等有 API 再说
+- 匹配算法：纯语义 vs 规则+语义混合
+- 是否需要手动标注训练数据
+
+---
+
+## 五、自动记账 Agent（并行工具线）
+
+### 5.1 数据流
+
+```
+支付宝/微信账单 CSV
+         │
+         ▼
+┌─────────────────────────┐
+│  Ingestion Skill（变体） │
+│  解析 CSV 账单格式        │
+│  输出：交易流水列表        │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│  Classification Skill   │
+│  DeepSeek + 规则表       │
+│  商户名 → 随手记科目      │
+│  规则优先，AI 兜底        │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│  Write Skill            │
+│  随手记导入 or 自动化     │
+│  ⚠️ 随手记无公开 API     │
+└─────────────────────────┘
+```
+
+### 5.2 核心风险
+
+- **随手记无公开 API**，可能需要模板导入文件 or computer-use 模拟点击
+- 账单需手动导出（支付宝/微信无个人 API）
+- 商户名脏数据 → 分类歧义
+
+---
+
+## 六、Rule Mining Agent（Phase 3）
+
+### 6.1 数据流
+
+```
+Knowledge Agent 知识库
+         +
+用户行为数据（点击/收藏/忽略）
+         │
+         ▼
+┌─────────────────────────┐
+│  行为采集层               │
+│  SQLite 埋点表            │
+│  → Preference Dataset   │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│  规则挖掘引擎              │
+│  Apriori / FP-Growth     │
+│  找兴趣共现模式            │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│  推荐引擎                 │
+│  向量召回 + 规则重排       │
+│  「猜你喜欢」收口          │
+└─────────────────────────┘
+```
+
+### 6.2 核心风险
+
+- 冷启动数据不足 → 用标签/分类做初始先验
+- 推荐同质化 → 引入 ε-greedy 探索机制
+
+---
+
+## 七、共享技术栈
+
+| 组件 | 选型 | 说明 |
 |------|------|------|
-| title | string | ≤15字标题 |
-| summary | string | 120-200字摘要，三段式结构 |
-| highlights | list[str] | 3-5个关键亮点 |
-| category | string | 19分类之一 |
-| tags | list[str] | 3-5个标签（领域标签+类型标签） |
-| source_quality | string | high / medium / low 可信度 |
-| actionable | bool | 是否包含可执行操作 |
-| date | string | YYYY-MM-DD |
-
-**19分类体系：**
-科技与AI / 产品与工具 / 阅读与影视 / 职场与创业 / 投资与商业 /
-设计与创意 / 生活与旅行 / 健康与心理 / 教育与学习 / 人文与哲学 /
-社会与热点 / 美食与消费 / 人际关系 / 好词好句 / 个人成长 /
-效率方法 / 数据与报告 / 趣味与娱乐 / 其他
+| AI 引擎 | DeepSeek Chat API | 兼容 OpenAI SDK，性价比高 |
+| 本地 OCR | PaddleOCR | 零费用离线 |
+| 浏览器渲染 | Playwright（计划中） | 解决 JS 渲染网站 |
+| 主存储 | 飞书多维表格 | 11 字段，当前主展示 |
+| 本地存储 | SQLite | 真相源，离线可用（待实现） |
+| 向量存储 | Chroma | RAG 检索（待实现） |
+| 消息网关 | Flask + Cloudflare Tunnel | 企微接入 |
+| 代码语言 | Python 3.12 | .venv 虚拟环境 |
 
 ---
 
-### 第三层：知识层
+## 八、近期执行优先级
 
-**当前存储：**
-- 飞书多维表格（11字段）— 主存储，已可用
-- data/knowledge.db（SQLite）— 待实现 P2-1
-- data/chroma_db/（Chroma 向量库）— 待实现 P2-2
-
-**Schema：**
-```json
-{
-  "id": "uuid",
-  "source_type": "平台标识",
-  "source_path": "原始URL/路径",
-  "title": "标题",
-  "summary": "摘要",
-  "full_content": "完整内容",
-  "highlights": ["亮点1", "亮点2"],
-  "tags": ["标签1", "标签2"],
-  "category": "分类",
-  "source_quality": "high|medium|low",
-  "actionable": true/false,
-  "created_at": "时间戳(ms)",
-  "embedding_status": false
-}
-```
+| 优先级 | 任务 | 所属 Agent | 价值 |
+|--------|------|-----------|------|
+| P0 | 配置 iPhone 快捷指令（文本/URL/图片） | Knowledge | 打通移动端入口 |
+| P1 | iCloud 图片 → OCR → summary → feishu 接线 | Knowledge | 图片自动化闭环 |
+| P1 | Headless 浏览器（Playwright） | Knowledge | 解决小红书/公众号抓取 |
+| P2 | SQLite 本地落库 + Chroma 向量化 + RAG | Knowledge | 知识库可检索，项目质变点 |
+| P3 | Job Agent MVP（简历解析 + JD 匹配） | Job | 第二条业务线，面试展示 |
 
 ---
 
-### 第四层：Agent 层
-
-**三个 Agent 设计：**
-
-1. **Knowledge Agent（✅ 已实现）**
-   - `src/main.py` 为核心，ETL 全链路
-   - 调用链：ingest → summarize → feishu
-   - 企微/微信客服入口 → 自动触发
-
-2. **Career Agent（🔴 待实现 P3-1）**
-   - Skills：Resume Skill（简历解析）、Job Search Skill（岗位搜索）、Match Skill（匹配评分）
-   - 输入：简历 PDF/文本 + 岗位描述
-   - 输出：匹配度评分 + 推荐理由
-
-3. **Discovery Agent（🔴 待实现 P3-2）**
-   - Skills：Rule Mining Skill（规则挖掘）、Recommendation Skill（推荐）
-   - 输入：知识库全量数据
-   - 输出：跨领域关联规律 + 知识地图
-
----
-
-### 第五层：学习层
-
-**设计思路：**
-- 记录用户行为：点击 / 收藏 / 忽略 / 转发
-- 行为数据存入 SQLite 表 `user_behaviors`
-- 定期聚合形成 Preference Dataset
-- 为推荐层提供训练数据
-
----
-
-### 第六层：推荐层
-
-**设计思路：**
-- 协同过滤：基于标签相似度的内容推荐
-- 内容推荐：基于 Embedding 向量相似度的语义推荐
-- 输出：每日推荐摘要（类似早报）
-
----
-
-## 技术栈
-
-| 组件 | 技术选型 | 说明 |
-|------|---------|------|
-| 语言 | Python 3.12 | .venv 虚拟环境 |
-| AI 摘要 | DeepSeek Chat API | 兼容 OpenAI SDK |
-| HTML 解析 | BeautifulSoup4 | 多容器选择器 |
-| OCR | PaddleOCR | 本地引擎，零 API 成本 |
-| 浏览器渲染 | Playwright（计划中）| P1-1 待实现 |
-| 主存储 | 飞书多维表格 | 11字段，已可用 |
-| 本地存储 | SQLite（计划中）| P2-1 待实现 |
-| 向量存储 | Chroma（计划中）| P2-2 待实现 |
-| 企微接入 | Flask + Cloudflare Tunnel | 端口 5001 |
-| 微信客服 | 企微 sync_msg API 轮询 | 方案 B，无需隧道 |
-
----
-
-## 文件所有权
+## 九、文件所有权
 
 | 文件 | 管理者 | 说明 |
 |------|--------|------|
-| `ARCHITECTURE.md` | **Claude Code** | 架构设计权威文件，Trae 只读 |
-| `NEXT_STEPS.md` | Claude Code | 任务拆解和操作说明，Trae 参考 |
-| `IDEAS.md` | **用户（caimeiying）** | 想法池，Claude Code 和 Trae 只读 |
-| `ROADMAP.md` | **Trae** | 进度跟踪，Claude Code 只读 |
-| `README.md` | Trae | 项目说明，随进度更新 |
-| `src/` 下所有 `.py` | **Trae** | 代码实现，Claude Code 只读 |
-| `prompts/summary_prompt.txt` | 双方 | Prompt 调优需协商 |
+| `ARCHITECTURE.md` | **Claude Code** | 架构设计权威文件 |
+| `NEXT_STEPS.md` | Claude Code | 任务拆解和操作说明 |
+| `TRAE_ONBOARDING.md` | Claude Code | Trae 入场指南 |
+| `ROADMAP.md` | **Trae** | 进度跟踪 |
+| `README.md` | Trae | 项目说明 |
+| `src/` 下所有 `.py` | **Trae** | 代码实现 |
+| `IDEAS.md` | **用户（caimeiying）** | 想法池 |
+| `prompts/summary_prompt.txt` | 协商 | Prompt 调优 |
 | `config/.env.example` | Trae | 新增配置项时更新 |
 
 **协作原则：**
-- Claude Code 决定"做什么"（架构方向、功能优先级）
-- Trae 决定"怎么做"（代码实现细节、进度推进）
+- Claude Code 决定架构方向和功能优先级（"做什么"）
+- Trae 负责代码实现和进度推进（"怎么做"）
 - 双方通过 NEXT_STEPS.md 对齐工作内容
-- 如果 Trae 认为架构需要调整，在 ROADMAP.md 中记录讨论点
+- Trae 在 ROADMAP.md 讨论区提出架构调整建议
