@@ -1,5 +1,8 @@
-"""Knowledge Agent 主流程 v3：ingest → summarize → feishu + sqlite + chroma
-v3: SQLite 双写 + 异步 Embedding 向量化 + RAG 检索就绪
+"""Knowledge Agent 主流程 v4：ingest → summarize → feishu + sqlite + chroma
+v4: macOS x86_64 兼容版
+  - Embedding: 百炼 API / ChromaDB ONNX（不再依赖 PyTorch 2.4+）
+  - ChromaDB 自动 embedding（无需手动向量化也能入库和检索）
+  - SQLite 双写 + 异步 Embedding 向量化 + RAG 检索就绪
 """
 import uuid
 import logging
@@ -21,12 +24,12 @@ PLATFORM_LABELS = {
 
 def process(source: str) -> dict:
     """
-    完整 ETL 管道（v3）：
+    完整 ETL 管道（v4）：
     1. 采集（URL/文件/文本）
     2. DeepSeek 结构化摘要（含平台上下文）
     3. 写入飞书多维表格
     4. 同步写入 SQLite 本地库
-    5. 异步生成 Embedding → Chroma 入库
+    5. 异步 Embedding → Chroma 入库（支持百炼 API 或 ONNX 自动）
     """
     # ── 1. 采集 ──
     ingested = ingest(source)
@@ -110,15 +113,14 @@ def _save_to_sqlite(record: dict):
 def _embed_async(record: dict):
     """后台异步生成 Embedding 并存入 Chroma"""
     try:
-        from skills.embedding_skill import embed_record
+        from skills.embedding_skill import embed_record, get_embedding_method
         from knowledge.chroma_store import add_to_chroma
-        from skills.sqlite_skill import save_to_sqlite
 
+        # 尝试外部 Embedding（百炼 API 优先，ONNX 备选）
         embedding = embed_record(record)
-        if embedding is None:
-            logger.debug(f"Embedding 方案不可用，跳过: {record['id'][:8]}")
-            return
+        method_name = get_embedding_method()
 
+        # 写入 Chroma：有外部 embedding 就用，没有也让 ChromaDB 自动 embedding
         if add_to_chroma(record, embedding):
             # 标记 SQLite 中该记录已完成向量化
             try:
@@ -126,7 +128,10 @@ def _embed_async(record: dict):
                 mark_embedded(record["id"])
             except Exception:
                 pass
-            print(f"  🧬 Chroma: 向量化完成 ({'DeepSeek' if 'DeepSeek' in str(embedding) else 'local'}, 维度={len(embedding)})")
+            if embedding is not None:
+                print(f"  🧬 Chroma: 向量化完成 ({method_name}, 维度={len(embedding)})")
+            else:
+                print(f"  🧬 Chroma: 自动向量化完成 (ChromaDB ONNX)")
         else:
             logger.debug(f"Chroma 写入失败: {record['id'][:8]}")
     except Exception as e:
@@ -158,7 +163,8 @@ def _print_success(record: dict, platform: str):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  Knowledge Agent v3 — SQLite + Chroma + RAG")
+    print("  Knowledge Agent v4 — SQLite + Chroma + RAG")
+    print("  macOS x86_64 兼容版（百炼/ONNX Embedding）")
     print("=" * 60)
 
     # 测试1：纯文本
@@ -179,17 +185,26 @@ if __name__ == "__main__":
             "它能够理解整个代码库的上下文，支持多文件编辑、Git 操作、"
             "运行测试和调试。安装方法：npm install -g @anthropic-ai/claude-code")
 
-    # 测试4：SQLite + RAG 检索验证
+    # 测试4：SQLite + Chroma + RAG 检索验证
     print("\n[4/4] 知识库检索验证...")
     import time
     time.sleep(3)  # 等异步 embedding 完成
-    print("  🔍 关键词搜索: '编程工具'")
+
+    # Chroma 统计
+    from knowledge.chroma_store import get_chroma_stats
+    chroma_stats = get_chroma_stats()
+    print(f"  📊 ChromaDB: {chroma_stats}")
+
+    # RAG 语义搜索
+    print("  🔍 语义搜索: '编程工具'")
     from knowledge.rag_retriever import search
     results = search("编程工具", top_k=3)
     for r in results:
         method = r.get("search_method", "unknown")
         print(f"    [{method}] {r.get('title', '')[:40]} (score={r.get('similarity_score', 'N/A')})")
-    print("\n  📊 知识库统计:")
+
+    # SQLite 统计
+    print("\n  📊 SQLite 统计:")
     from skills.sqlite_skill import get_knowledge_stats
     stats = get_knowledge_stats()
     print(f"    总条目: {stats.get('total', 0)} | 已向量化: {stats.get('embedded', 0)}")

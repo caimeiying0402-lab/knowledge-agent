@@ -13,7 +13,7 @@
 
 | 层 | 名称 | 完成度 | 状态 |
 |---|------|--------|------|
-| 1 | 数据采集层 | 85% | 🟡 核心通路打通，JS渲染网站待解决 |
+| 1 | 数据采集层 | 85% | 🟡 企微主链路已通，JS渲染网站待解决 |
 | 2 | 数据处理层 | 90% | 🟢 v2 完成，19分类体系运行中 |
 | 3 | 知识层 | 25% | 🔴 仅飞书多维表格，缺SQLite和向量库 |
 | 4 | Agent层 | 30% | 🔴 仅Knowledge Agent，缺Career/Discovery |
@@ -22,10 +22,9 @@
 
 **已完成（可直接使用）：**
 - 文字/URL/图片输入 → DeepSeek AI摘要（19分类）→ 飞书多维表格 全链路
-- 企业微信自建应用消息接收（企微成员 → Flask Webhook → ETL）
-- 微信客服消息轮询（个人微信 → sync_msg API → ETL，有频率限制）
+- 企业微信自建应用消息接收（**主采集端**，企微成员 → Cloudflare Worker → D1 排队 → 本地同步 ETL，待迁移）
+- 微信客服消息轮询（个人微信 → sync_msg API → ETL，备用入口，有频率限制）
 - PaddleOCR 本地图片识别（零API成本）
-- iCloud Drive 文件监听框架
 
 ---
 
@@ -45,14 +44,14 @@ PYTHONPATH=src python src/main.py
 # 运行全链路测试
 PYTHONPATH=src python src/tests/test_harness.py
 
-# 启动企微 Webhook（需要 cloudflared 隧道）
-bash start_wechat.sh app
+# 企微云端同步（从 Cloudflare Worker D1 拉取消息并处理）
+PYTHONPATH=src python src/skills/cloud_sync_skill.py
 
-# 启动微信客服轮询（无需隧道，推荐个人微信方案）
+# 启动微信客服轮询（无需隧道）
 bash start_wechat.sh poller
 
-# 启动全部服务
-bash start_wechat.sh all
+# 企微本地 Webhook（已废弃，仅作调试备用，需 cloudflared 隧道）
+# bash start_wechat.sh app
 ```
 
 **关键依赖：**
@@ -70,6 +69,358 @@ Pillow          # 测试图片生成
 ---
 
 ## 三、后续任务（按优先级排序）
+
+### P0：企微链路云端化（Flask → Cloudflare Worker + D1）
+
+> **进度：90%** | 2026-06-28 已部署，签名通过，AES 解密调试中
+
+**已部署（2026-06-28）：**
+- ✅ Worker `https://knowledge-agent-webhook.knowledge-agent.workers.dev`
+- ✅ D1 `knowledge-agent-messages`（id: a762fdcf-...）
+- ✅ R2 `knowledge-agent-images`
+- ✅ 全部 secrets 配置
+- ✅ `cloud_sync_skill.py` + `start_wechat.sh` sync 模式就绪
+- ⚠️ **阻塞**：AES-CBC 解密 — key=32B cipher=64B 长度正确但 `crypto.subtle.decrypt` 报错。签名验证已通过。
+- **明天**：对比 Python/JS 解密 hex，定位 Web Crypto API 差异
+
+**原始问题：** 企微自建应用通过本地 Flask Webhook + Cloudflare Tunnel 接收消息，Mac 关机则消息丢失。
+
+**目标：** 将消息接收搬到云端（Cloudflare Worker），Mac 关机时消息自动排队，开机后同步处理。
+
+**架构变更：**
+
+```
+之前：企微 → Cloudflare Tunnel → Mac Flask → ETL（Mac 必须在线）
+之后：企微 → Cloudflare Worker → D1 排队 → Mac 开机后同步 → ETL
+```
+
+**成本：** 0 元（Cloudflare Workers/D1/R2 免费额度足够个人使用）
+
+**涉及组件：**
+
+| 组件 | 说明 | 位置 |
+|------|------|------|
+| Cloudflare Worker | 接收企微回调、AES 解密、存 D1、图片存 R2 | Cloudflare 边缘 |
+| Cloudflare D1 | 消息排队数据库 | Cloudflare 边缘 |
+| Cloudflare R2 | 图片暂存（企微临时媒体 3 天过期，需立即落盘） | Cloudflare 边缘 |
+| `src/skills/cloud_sync_skill.py` | 本地同步脚本，拉取未处理消息 → 跑 ETL → 标记已处理 | 本地 Mac |
+
+**涉及文件：**
+- 新建：`src/skills/cloud_sync_skill.py`（本地同步脚本）
+- 修改：`config/.env.example`（新增 `CF_WORKER_URL`、`CF_SYNC_API_KEY`）
+- 修改：`start_wechat.sh`（移除 `app` 模式，改为 `sync` 模式）
+- 保留：`src/skills/wechat_webhook.py`（降级为本地调试备用，不在生产使用）
+
+**具体实现步骤：**
+
+#### Step 1: 创建 Cloudflare 项目
+
+```bash
+# 安装 Wrangler CLI（如未安装）
+npm install -g wrangler
+wrangler login
+
+# 创建 Worker 项目
+mkdir -p /Users/caimeiying/AI-Agent-Lab/knowledge-agent/cloudflare-worker
+cd /Users/caimeiying/AI-Agent-Lab/knowledge-agent/cloudflare-worker
+wrangler init --from-dash-compatible
+```
+
+#### Step 2: 创建 D1 数据库
+
+```bash
+wrangler d1 create knowledge-agent-messages
+# 记录输出的 database_id，填入 wrangler.toml
+```
+
+**D1 表结构（初始化 SQL）：**
+```sql
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    msg_type TEXT NOT NULL,           -- 'text' | 'link' | 'image' | 'voice'
+    from_user TEXT NOT NULL,
+    content TEXT,                      -- 文本内容
+    url TEXT,                          -- 链接 URL
+    title TEXT,                        -- 链接标题
+    description TEXT,                  -- 链接描述
+    media_id TEXT,                     -- 企微图片 media_id
+    image_r2_key TEXT,                 -- R2 对象 key（图片已下载时）
+    created_at INTEGER NOT NULL,       -- Unix 时间戳（秒）
+    processed INTEGER DEFAULT 0,       -- 0=待处理, 1=已处理
+    processed_at INTEGER               -- 处理完成时间戳
+);
+
+CREATE INDEX IF NOT EXISTS idx_processed ON messages(processed);
+CREATE INDEX IF NOT EXISTS idx_created_at ON messages(created_at);
+```
+
+```bash
+# 执行建表
+wrangler d1 execute knowledge-agent-messages --file=./schema.sql
+```
+
+#### Step 3: 创建 R2 存储桶
+
+```bash
+wrangler r2 bucket create knowledge-agent-images
+```
+
+#### Step 4: 编写 Worker 代码 (`cloudflare-worker/src/index.ts`)
+
+**路由设计：**
+
+| 方法 | 路径 | 功能 | 认证 |
+|------|------|------|------|
+| GET | `/wechat/callback` | 企微回调 URL 验证 | 企微签名 |
+| POST | `/wechat/callback` | 企微消息接收 + 解密 + 入库 | 企微签名 |
+| GET | `/api/pending?limit=50` | 拉取未处理消息 | API Key |
+| POST | `/api/processed` | 标记消息已处理 | API Key |
+| GET | `/api/image/:key` | 获取 R2 中的图片 | API Key |
+| GET | `/health` | 健康检查 | 无 |
+
+**核心逻辑：**
+
+```typescript
+// POST /wechat/callback 处理流程
+// 1. 验证企微签名（msg_signature）
+// 2. 解密 AES-CBC 消息体
+// 3. 解析 XML → 提取 msg_type / content / url / media_id 等
+// 4. 如果是图片消息：
+//    a. 用 corp_id + corp_secret 获取 access_token
+//    b. 下载图片 → 上传到 R2（key = wechat_{media_id}.jpg）
+//    c. 存 D1 时附带 image_r2_key
+// 5. 存入 D1 messages 表
+// 6. 返回 "success"
+```
+
+**AES 解密（企微标准算法，TypeScript 实现）：**
+
+```typescript
+// 企微 AES-CBC 解密
+// 密钥 = Base64Decode(AES_KEY + "=")
+// IV = 密钥前 16 字节
+// 解密后格式: random(16) + msg_len(4 big-endian) + xml_content + from_corpid
+// 使用 Web Crypto API (SubtleCrypto)
+async function decryptMessage(encryptB64: string, aesKey: string): Promise<string> {
+    const keyBytes = new Uint8Array(
+        [...atob(aesKey + '=')].map(c => c.charCodeAt(0))
+    );
+    const iv = keyBytes.slice(0, 16);
+    const ciphertext = new Uint8Array(
+        [...atob(encryptB64)].map(c => c.charCodeAt(0))
+    );
+
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt']
+    );
+    const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-CBC', iv }, cryptoKey, ciphertext
+    );
+    const plain = new Uint8Array(decrypted);
+    // 去除 PKCS7 填充
+    const padSize = plain[plain.length - 1];
+    const unpadded = plain.slice(0, plain.length - padSize);
+    // 读取 msg_len (4 bytes, big-endian) at offset 16
+    const msgLen = (unpadded[16] << 24) | (unpadded[17] << 16) |
+                   (unpadded[18] << 8) | unpadded[19];
+    // XML content starts at offset 20
+    const xmlBytes = unpadded.slice(20, 20 + msgLen);
+    return new TextDecoder().decode(xmlBytes);
+}
+```
+
+**Worker 环境变量（在 wrangler.toml 或 Cloudflare Dashboard 配置）：**
+
+```
+WECOM_TOKEN       -- 企微应用 Token
+WECOM_AES_KEY     -- 企微应用 EncodingAESKey（43位）
+WECOM_CORP_ID     -- 企业 CorpID
+WECOM_CORP_SECRET -- 应用 Secret（用于获取 access_token 下载图片）
+SYNC_API_KEY      -- 同步 API 的认证密钥（自生成，如 UUID）
+```
+
+**wrangler.toml 示例：**
+
+```toml
+name = "knowledge-agent-webhook"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "knowledge-agent-messages"
+database_id = "你的database_id"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "knowledge-agent-images"
+
+[vars]
+# 敏感变量用 wrangler secret put 设置，不写在这里
+```
+
+```bash
+# 设置敏感环境变量
+wrangler secret put WECOM_TOKEN
+wrangler secret put WECOM_AES_KEY
+wrangler secret put WECOM_CORP_ID
+wrangler secret put WECOM_CORP_SECRET
+wrangler secret put SYNC_API_KEY
+```
+
+#### Step 5: 部署 Worker 并配置企微回调
+
+```bash
+cd /Users/caimeiying/AI-Agent-Lab/knowledge-agent/cloudflare-worker
+wrangler deploy
+# 输出类似：https://knowledge-agent-webhook.你的名字.workers.dev
+
+# 在企业微信管理后台修改回调 URL 为：
+# https://knowledge-agent-webhook.你的名字.workers.dev/wechat/callback
+```
+
+#### Step 6: 创建本地同步脚本 `src/skills/cloud_sync_skill.py`
+
+```python
+"""
+云端同步技能 — 从 Cloudflare Worker 拉取企微消息并本地处理
+Mac 开机后运行此脚本，处理积压消息
+"""
+
+import os
+import requests
+from pathlib import Path
+
+CF_WORKER_URL = os.getenv("CF_WORKER_URL", "")      # 如 https://knowledge-agent-webhook.xxx.workers.dev
+CF_SYNC_API_KEY = os.getenv("CF_SYNC_API_KEY", "")
+
+def _headers():
+    return {"Authorization": f"Bearer {CF_SYNC_API_KEY}"}
+
+def fetch_pending(limit: int = 50) -> list[dict]:
+    """从 Worker 拉取未处理消息"""
+    resp = requests.get(
+        f"{CF_WORKER_URL}/api/pending",
+        params={"limit": limit},
+        headers=_headers(),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("messages", [])
+
+def mark_processed(ids: list[int]) -> bool:
+    """标记消息为已处理"""
+    resp = requests.post(
+        f"{CF_WORKER_URL}/api/processed",
+        json={"ids": ids},
+        headers=_headers(),
+        timeout=30,
+    )
+    return resp.status_code == 200
+
+def download_image(r2_key: str) -> Path:
+    """从 Worker 下载 R2 中的图片到本地 inbox"""
+    inbox = Path(os.getenv("INBOX_DIR", "data/inbox"))
+    inbox.mkdir(parents=True, exist_ok=True)
+    local_path = inbox / r2_key
+    resp = requests.get(
+        f"{CF_WORKER_URL}/api/image/{r2_key}",
+        headers=_headers(),
+        timeout=60,
+    )
+    resp.raise_for_status()
+    local_path.write_bytes(resp.content)
+    return local_path
+
+def sync_once():
+    """执行一次同步：拉取 → 处理 → 标记"""
+    from main import process as etl_process
+
+    messages = fetch_pending()
+    if not messages:
+        print("没有待处理消息")
+        return
+
+    processed_ids = []
+    for msg in messages:
+        try:
+            if msg["msg_type"] == "text":
+                etl_process(msg["content"])
+            elif msg["msg_type"] == "link":
+                source = msg.get("url") or f"{msg.get('title', '')}\n{msg.get('description', '')}"
+                etl_process(source)
+            elif msg["msg_type"] == "image":
+                if msg.get("image_r2_key"):
+                    img_path = download_image(msg["image_r2_key"])
+                    etl_process(str(img_path))
+                elif msg.get("media_id"):
+                    # 降级：尝试直接从企微下载（3 天内有效）
+                    from skills.wechat_webhook import _get_access_token, _download_image
+                    token = _get_access_token()
+                    img_path = _download_image(msg["media_id"], token)
+                    etl_process(str(img_path))
+            processed_ids.append(msg["id"])
+            print(f"✅ 已处理: [{msg['msg_type']}] id={msg['id']}")
+        except Exception as e:
+            print(f"❌ 处理失败: id={msg['id']}, error={e}")
+
+    if processed_ids:
+        mark_processed(processed_ids)
+        print(f"本次同步完成: {len(processed_ids)}/{len(messages)} 条")
+
+if __name__ == "__main__":
+    sync_once()
+```
+
+#### Step 7: 修改 `config/.env.example`
+
+新增：
+```
+# Cloudflare Worker 云端同步
+CF_WORKER_URL=https://knowledge-agent-webhook.你的名字.workers.dev
+CF_SYNC_API_KEY=你的同步API密钥
+```
+
+#### Step 8: 修改 `start_wechat.sh`
+
+- 移除 `app` 模式（不再启动本地 Flask Webhook）
+- 新增 `sync` 模式：`PYTHONPATH=src python src/skills/cloud_sync_skill.py`
+- 保留 `poller` 模式（微信客服轮询）
+
+#### Step 9: 验证
+
+```bash
+# 1. 部署 Worker
+cd /Users/caimeiying/AI-Agent-Lab/knowledge-agent/cloudflare-worker
+wrangler deploy
+
+# 2. 企微管理后台更新回调 URL
+
+# 3. 在企微发一条测试文本消息
+
+# 4. 检查 D1 是否收到
+wrangler d1 execute knowledge-agent-messages \
+  --command="SELECT * FROM messages WHERE processed=0 ORDER BY id DESC LIMIT 5"
+
+# 5. 本地同步
+cd /Users/caimeiying/AI-Agent-Lab/knowledge-agent
+source .venv/bin/activate
+PYTHONPATH=src python src/skills/cloud_sync_skill.py
+
+# 6. 检查飞书是否新增记录
+```
+
+**验收标准：**
+- Mac 关机时，企微发消息不丢（存入 D1）
+- Mac 开机后运行 `cloud_sync_skill.py`，积压消息全部处理
+- 文本、链接、图片三种消息类型都能同步处理
+- 图片在 Worker 端立即下载到 R2（避免企微 3 天过期）
+- Cloudflare 免费额度内运行，月成本 0 元
+
+**已知限制：**
+- 语音消息暂不支持（和当前一致）
+- 企微临时媒体 3 天过期，Worker 需在收到图片时立即下载到 R2
+- 同步脚本是手动触发，可后续改为开机自启或定时任务
 
 ### P1-1：Headless 浏览器抓取 JS 渲染网站
 
@@ -723,11 +1074,15 @@ CREATE TABLE user_behaviors (
 ## 四、执行顺序建议
 
 ```
-Phase 1（当前，2-3天）:
-  ├── P1-1: Headless 浏览器 → 解决小红书/公众号抓取
-  └── P2-1: SQLite 本地库 → 离线存储能力
+Phase 0（当前，1-2天）:
+  └── P0: 企微链路云端化 → Cloudflare Worker + D1 + R2，Mac 可关机
+
+Phase 1（2-3天）:
+  ├── P1: 企微链路加固 → 错误重试、消息回执、健康监控
+  └── P1-1: Headless 浏览器 → 解决小红书/公众号抓取
 
 Phase 2（1-2周）:
+  ├── P2-1: SQLite 本地库 → 离线存储能力
   ├── P2-2: Chroma 向量库 → RAG 检索
   └── P3-1: Career Agent → 简历解析 + 匹配
 

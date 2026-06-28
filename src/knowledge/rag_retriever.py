@@ -1,8 +1,10 @@
 """
-RAG 检索器 — 语义搜索知识库
+RAG 检索器 v2 — 语义搜索知识库
 
-组合 Embedding 和 Chroma，提供统一的检索入口。
-支持纯语义检索（Chroma）和混合检索（关键词 + 语义融合）。
+改进：
+- 优先使用 ChromaDB 的 query_text 自动 embedding（无需手动向量化查询）
+- 仍支持手动提供 query_embedding 的方式
+- 支持纯语义检索（Chroma）和混合检索（关键词 + 语义融合）
 """
 import logging
 
@@ -17,7 +19,7 @@ def search(
     """
     语义搜索知识库。
 
-    流程：query → Embedding → Chroma 向量检索 → 返回结果
+    流程：query → ChromaDB 自动 Embedding → 向量检索 → 返回结果
 
     Args:
         query: 搜索查询文本
@@ -34,23 +36,40 @@ def search(
                 "source_type": "...",
                 "source_path": "...",
                 "similarity_score": 0.95,
+                "search_method": "vector" | "keyword",
             },
             ...
         ]
     """
-    # ── 向量检索 ──
+    # ── 向量检索（优先 ChromaDB 自动 embedding） ──
+    try:
+        from knowledge.chroma_store import search_similar
+
+        # 方式1：让 ChromaDB 自动用内置 ONNX 模型 embedding 查询文本
+        results = search_similar(query_text=query, n_results=top_k)
+        if results:
+            for r in results:
+                r.setdefault("search_method", "vector")
+            logger.info(f"RAG 语义检索成功，返回 {len(results)} 条")
+            return results
+    except Exception as e:
+        logger.warning(f"向量检索失败: {e}")
+
+    # ── 尝试手动 Embedding 方式（百炼 API 等） ──
     try:
         from skills.embedding_skill import embed_text
         from knowledge.chroma_store import search_similar
 
         query_embedding = embed_text(query)
         if query_embedding:
-            results = search_similar(query_embedding, n_results=top_k)
+            results = search_similar(query_embedding=query_embedding, n_results=top_k)
             if results:
-                logger.info(f"RAG 语义检索成功，返回 {len(results)} 条")
+                for r in results:
+                    r.setdefault("search_method", "vector")
+                logger.info(f"RAG 手动 Embedding 检索成功，返回 {len(results)} 条")
                 return results
     except Exception as e:
-        logger.warning(f"向量检索失败: {e}")
+        logger.debug(f"手动 Embedding 检索也失败: {e}")
 
     # ── 关键词回退 ──
     if use_keyword_fallback:
@@ -89,14 +108,13 @@ def hybrid_search(
     # 向量检索
     vector_results = {}
     try:
-        from skills.embedding_skill import embed_text
         from knowledge.chroma_store import search_similar
-        q_emb = embed_text(query)
-        if q_emb:
-            for item in search_similar(q_emb, n_results=top_k * 2):
-                vid = item.get("id", "")
-                item["_vector_score"] = item.pop("similarity_score", 0)
-                vector_results[vid] = item
+
+        # 优先用 ChromaDB 自动 embedding
+        for item in search_similar(query_text=query, n_results=top_k * 2):
+            vid = item.get("id", "")
+            item["_vector_score"] = item.pop("similarity_score", 0)
+            vector_results[vid] = item
     except Exception:
         pass
 

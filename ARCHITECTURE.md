@@ -3,7 +3,7 @@
 > **📌 此文件由 Claude Code 管理。** Trae/Codex 请勿直接修改。
 > 如需调整架构，在 ROADMAP.md 讨论区提交，或通过 Claude Code 发起变更。
 >
-> 最后更新：2026-06-28
+> 最后更新：2026-06-28（P0 企微云端化方案）
 > 战略文档：`/Users/caimeiying/AI-Agent-Lab/roadmap_matrix.md`
 
 ---
@@ -16,7 +16,7 @@ Personal AI OS = 多 Agent 协作系统，围绕个人知识、求职、记账�
 
 | Agent | 定位 | 阶段 | 状态 |
 |-------|------|------|------|
-| Knowledge Agent | 非结构化信息 → 结构化知识资产（多端采集→AI处理→飞书库→可检索） | 主线 / 第一阶段 | 🟡 ETL 主链路已通 |
+| Knowledge Agent | 非结构化信息 → 结构化知识资产（企微采集→AI处理→飞书库→可检索） | 主线 / 第一阶段 | 🟡 ETL 主链路已通 |
 | Job Agent | 简历 × JD 匹配 → RAG 推荐 + 打招呼话术生成 | 第二阶段 | ⬜ 未启动 |
 | 自动记账 Agent | 支付宝/微信账单 → 自动登记随手记指定科目 | 并行工具线 | ⬜ 未启动 |
 | Rule Mining Agent | 历史行为数据 → 规则挖掘 + 个性化推荐 | 第三阶段 | ⬜ 未启动 |
@@ -54,10 +54,11 @@ Personal AI OS = 多 Agent 协作系统，围绕个人知识、求职、记账�
 ### 3.1 数据流
 
 ```
-iPhone 快捷指令 ──→ iCloud Drive ──→ watchdog ──┐
-企微消息 ──→ Webhook (:5001) ──────────────────┤
-微信客服 ──→ sync_msg 轮询 ─────────────────────┤
-手动 CLI ──→ python main.py ────────────────────┤
+企微自建应用 ──→ Cloudflare Worker ──→ D1 排队 ──┐  ← 主采集端（7×24 云端接收）
+                                               │
+                 Mac 开机同步 ←── 本地 ETL ←────┘
+微信客服 ──→ sync_msg 轮询 ────────────────────┤
+手动 CLI ──→ python main.py ────────────────────┘
                                                   ▼
 ┌──────────────────────────────────────────────────────┐
 │                  ingest()                             │
@@ -90,14 +91,12 @@ iPhone 快捷指令 ──→ iCloud Drive ──→ watchdog ──┐
 
 ### 3.2 消息入口矩阵
 
-| 入口 | 技术方案 | 消息类型 | 状态 |
-|------|---------|---------|------|
-| 企微自建应用 | Flask Webhook + Cloudflare Tunnel | 文字/链接/图片 | ✅ |
-| 微信客服（主动拉取） | sync_msg API 轮询 | 文字/链接/图片/文件 | ⚠️ 45009 限流 |
-| iCloud 文本/URL | watchdog + 快捷指令 JSON | 文本/URL | 🟡 待配置快捷指令 |
-| iCloud 图片 | watchdog → inbox → OCR | 图片 | 🟡 待接线 |
-| 微信历史回溯 | SQLite 逆向 → 导入 | 历史消息 | 🟡 待真机联调 |
-| 手动 CLI | `python src/main.py` | 文本/URL/文件 | ✅ |
+| 入口 | 技术方案 | 消息类型 | 定位 | 状态 |
+|------|---------|---------|------|------|
+| 企微自建应用 | Cloudflare Worker + D1 + 本地同步脚本 | 文字/链接/图片 | **主采集端** | 🟡 待迁移 |
+| 微信客服（主动拉取） | sync_msg API 轮询 | 文字/链接/图片/文件 | 备用入口 | ⚠️ 45009 限流 |
+| 微信历史回溯 | SQLite 逆向 → 导入 | 历史消息 | 工具 | 🟡 待真机联调 |
+| 手动 CLI | `python src/main.py` | 文本/URL/文件 | 调试/批量 | ✅ |
 
 ### 3.3 平台抓取能力
 
@@ -245,7 +244,7 @@ Knowledge Agent 知识库
 | 主存储 | 飞书多维表格 | 11 字段，当前主展示 |
 | 本地存储 | SQLite | 真相源，离线可用（待实现） |
 | 向量存储 | Chroma | RAG 检索（待实现） |
-| 消息网关 | Flask + Cloudflare Tunnel | 企微接入 |
+| 消息网关 | Cloudflare Worker + D1 | 企微接入，7×24 云端接收，Mac 离线不丢消息 |
 | 代码语言 | Python 3.12 | .venv 虚拟环境 |
 
 ---
@@ -254,11 +253,11 @@ Knowledge Agent 知识库
 
 | 优先级 | 任务 | 所属 Agent | 价值 |
 |--------|------|-----------|------|
-| P0 | 配置 iPhone 快捷指令（文本/URL/图片） | Knowledge | 打通移动端入口 |
-| P1 | iCloud 图片 → OCR → summary → feishu 接线 | Knowledge | 图片自动化闭环 |
-| P1 | Headless 浏览器（Playwright） | Knowledge | 解决小红书/公众号抓取 |
-| P2 | SQLite 本地落库 + Chroma 向量化 + RAG | Knowledge | 知识库可检索，项目质变点 |
-| P3 | Job Agent MVP（简历解析 + JD 匹配） | Job | 第二条业务线，面试展示 |
+| P0 | 企微链路云端化（Flask→Cloudflare Worker + D1，Mac 可关机） | Knowledge | 消除本地依赖，消息不丢 |
+| P1 | 企微链路加固（错误重试、消息回执、健康监控） | Knowledge | 主采集端稳定性保障 |
+| P2 | Headless 浏览器（Playwright） | Knowledge | 解决小红书/公众号抓取 |
+| P3 | SQLite 本地落库 + Chroma 向量化 + RAG | Knowledge | 知识库可检索，项目质变点 |
+| P4 | Job Agent MVP（简历解析 + JD 匹配） | Job | 第二条业务线，面试展示 |
 
 ---
 
