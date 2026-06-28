@@ -1,25 +1,13 @@
 name = "knowledge-agent-webhook"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
 
-# ── D1 数据库 ──────────────────────────────────────────────────
-# 先运行: wrangler d1 create knowledge-agent-messages
-# 把输出的 database_id 填到下面
 [[d1_databases]]
 binding = "DB"
 database_name = "knowledge-agent-messages"
 database_id = "a762fdcf-2c5d-47ac-aafe-1b7d36a1122a"
 
-# ── R2 存储桶 ──────────────────────────────────────────────────
-# 先运行: wrangler r2 bucket create knowledge-agent-images
 [[r2_buckets]]
 binding = "IMAGES"
 bucket_name = "knowledge-agent-images"
-
-# ── 环境变量（非敏感） ────────────────────────────────────────
-# 敏感变量用 wrangler secret put 设置，不写在这里:
-#   wrangler secret put WECOM_TOKEN
-#   wrangler secret put WECOM_AES_KEY
-#   wrangler secret put WECOM_CORP_ID
-#   wrangler secret put WECOM_CORP_SECRET
-#   wrangler secret put SYNC_API_KEY
