@@ -23,6 +23,19 @@
 **分支：** `main`
 **战略文档：** `/Users/caimeiying/AI-Agent-Lab/roadmap_matrix.md`（只读参考，了解全貌用）
 
+### ⚠️ 必须在本地工作，不要用云端
+
+本项目依赖大量本地资源，**不能从 GitHub 全新 clone**。必须直接打开本地已有目录：
+
+| 本地依赖 | 说明 | 云端 clone 拿不到 |
+|----------|------|-------------------|
+| `config/.env` | DeepSeek/GLM API Key | ❌ gitignored |
+| `.venv/` | Python 虚拟环境（含 PaddleOCR 等本地模型） | ❌ gitignored |
+| `.paddleocr_cache/` | PaddleOCR 本地模型文件 | ❌ gitignored |
+| `data/` | 运行时数据、cursor 文件 | ❌ 本地路径 |
+
+**正确打开方式：** 在 Trae 中打开本地文件夹 `/Users/caimeiying/AI-Agent-Lab/knowledge-agent`，不要 clone。
+
 ---
 
 ## 二、Knowledge Agent 当前进度
@@ -65,19 +78,22 @@
 ## 四、快速上手
 
 ```bash
-git clone git@github.com:caimeiying0402-lab/knowledge-agent.git
-cd knowledge-agent
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp config/.env.example config/.env   # 编辑填入真实 API Key
-PYTHONPATH=src python src/main.py    # 跑通全链路
+# ⚠️ 不要 clone！直接 cd 到本地已有目录
+cd /Users/caimeiying/AI-Agent-Lab/knowledge-agent
+source .venv/bin/activate
+PYTHONPATH=src python src/main.py    # 验证全链路
 PYTHONPATH=src python src/tests/test_harness.py  # 跑测试
 ```
 
-**关键环境变量（config/.env）：**
-- `DEEPSEEK_API_KEY` — AI 摘要（必填）
+**本地环境已经配好，不需要重新安装依赖或配置 .env。**
+
+**本地可用模型（均在 config/.env 中已配置）：**
+- DeepSeek Chat API — AI 摘要（`src/models/deepseek_client.py`）
+- GLM (Zhipu) Chat Completions API — 备用/扩展（通过 CC Switch 路由）
+
+**其他关键环境变量：**
 - `FEISHU_APP_ID/SECRET/TOKEN/TABLE_ID` — 飞书入库
-- `WECOM_CORP_ID/CORP_SECRET` — 企微接入（可选）
+- `WECOM_CORP_ID/CORP_SECRET` — 企微接入
 
 ---
 
