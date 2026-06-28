@@ -272,7 +272,7 @@ function chkApi(req: Request, k: string): boolean {
 
 async function handleVerify(req: Request, env: Env): Promise<Response> {
   const sig=rawParam(req.url,"msg_signature"), ts=rawParam(req.url,"timestamp");
-  const non=rawParam(req.url,"nonce"), echo=rawParam(req.url,"echostr");
+  const non=rawParam(req.url,"nonce"), echo=decodeURIComponent(rawParam(req.url,"echostr"));
   console.log(`[verify] ts=${ts} echo=${echo.slice(0,30)}...`);
   if(!(await verifySig(env.WECOM_TOKEN,ts,non,echo,sig))) return new Response("bad sig",{status:403});
   try {
