@@ -1,10 +1,15 @@
-"""Knowledge Agent 主流程 v2：ingest → summarize → feishu（结构化增强）"""
+"""Knowledge Agent 主流程 v3：ingest → summarize → feishu + sqlite + chroma
+v3: SQLite 双写 + 异步 Embedding 向量化 + RAG 检索就绪
+"""
 import uuid
+import logging
+import threading
 from datetime import datetime
 from skills.ingestion_skill import ingest
 from skills.summary_skill import summarize
 from skills.feishu_skill import write_to_bitable
 
+logger = logging.getLogger(__name__)
 
 # ── 平台可视化标签 ──
 PLATFORM_LABELS = {
@@ -16,10 +21,12 @@ PLATFORM_LABELS = {
 
 def process(source: str) -> dict:
     """
-    完整 ETL 管道（v2 增强）：
+    完整 ETL 管道（v3）：
     1. 采集（URL/文件/文本）
     2. DeepSeek 结构化摘要（含平台上下文）
-    3. 写入飞书多维表格（含亮点字段）
+    3. 写入飞书多维表格
+    4. 同步写入 SQLite 本地库
+    5. 异步生成 Embedding → Chroma 入库
     """
     # ── 1. 采集 ──
     ingested = ingest(source)
@@ -58,6 +65,16 @@ def process(source: str) -> dict:
     else:
         print(f"❌ 飞书写入失败: {result}")
 
+    # ── 6. 同步写入 SQLite ──
+    _save_to_sqlite(record)
+
+    # ── 7. 异步 Embedding + Chroma 入库 ──
+    threading.Thread(
+        target=_embed_async,
+        args=(record,),
+        daemon=True,
+    ).start()
+
     return record
 
 
@@ -67,7 +84,6 @@ def _smart_truncate(content: str, max_chars: int = 5000) -> str:
         return content
 
     truncated = content[:max_chars]
-    # 在最后 200 字符内找最近句号
     last_period = max(
         truncated.rfind("。", max_chars - 200),
         truncated.rfind("！", max_chars - 200),
@@ -77,6 +93,44 @@ def _smart_truncate(content: str, max_chars: int = 5000) -> str:
     if last_period > max_chars // 2:
         return truncated[:last_period + 1] + "\n\n…(内容过长已截断)"
     return truncated + "\n\n…(内容过长已截断)"
+
+
+def _save_to_sqlite(record: dict):
+    """同步写入 SQLite，失败不影响主流程"""
+    try:
+        from skills.sqlite_skill import save_to_sqlite
+        if save_to_sqlite(record):
+            print(f"  📥 SQLite: 已同步入库")
+        else:
+            print(f"  ⚠️ SQLite: 写入跳过（可能已存在）")
+    except Exception as e:
+        logger.warning(f"SQLite 写入失败（不影响主流程）: {e}")
+
+
+def _embed_async(record: dict):
+    """后台异步生成 Embedding 并存入 Chroma"""
+    try:
+        from skills.embedding_skill import embed_record
+        from knowledge.chroma_store import add_to_chroma
+        from skills.sqlite_skill import save_to_sqlite
+
+        embedding = embed_record(record)
+        if embedding is None:
+            logger.debug(f"Embedding 方案不可用，跳过: {record['id'][:8]}")
+            return
+
+        if add_to_chroma(record, embedding):
+            # 标记 SQLite 中该记录已完成向量化
+            try:
+                from knowledge.sqlite_store import mark_embedded
+                mark_embedded(record["id"])
+            except Exception:
+                pass
+            print(f"  🧬 Chroma: 向量化完成 ({'DeepSeek' if 'DeepSeek' in str(embedding) else 'local'}, 维度={len(embedding)})")
+        else:
+            logger.debug(f"Chroma 写入失败: {record['id'][:8]}")
+    except Exception as e:
+        logger.warning(f"Async Embedding 失败: {e}")
 
 
 def _print_success(record: dict, platform: str):
@@ -104,7 +158,7 @@ def _print_success(record: dict, platform: str):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  Knowledge Agent v2 — 结构化增强")
+    print("  Knowledge Agent v3 — SQLite + Chroma + RAG")
     print("=" * 60)
 
     # 测试1：纯文本
@@ -123,10 +177,19 @@ if __name__ == "__main__":
     process("Claude Code 是 Anthropic 推出的 AI 编程助手，它可以直接在你的终端中运行。"
             "与传统的 IDE 插件不同，Claude Code 是一个命令行工具，"
             "它能够理解整个代码库的上下文，支持多文件编辑、Git 操作、"
-            "运行测试和调试。它的核心优势在于：1) 深度代码理解，"
-            "2) 原生终端集成，3) 安全沙箱执行，4) 支持自定义工具和 MCP 协议。"
-            "安装方法：npm install -g @anthropic-ai/claude-code")
+            "运行测试和调试。安装方法：npm install -g @anthropic-ai/claude-code")
 
-    # 测试4：碎片化内容
-    print("\n[4/4] 碎片化内容测试...")
-    process("今天喝了杯咖啡，好喝！☕️")
+    # 测试4：SQLite + RAG 检索验证
+    print("\n[4/4] 知识库检索验证...")
+    import time
+    time.sleep(3)  # 等异步 embedding 完成
+    print("  🔍 关键词搜索: '编程工具'")
+    from knowledge.rag_retriever import search
+    results = search("编程工具", top_k=3)
+    for r in results:
+        method = r.get("search_method", "unknown")
+        print(f"    [{method}] {r.get('title', '')[:40]} (score={r.get('similarity_score', 'N/A')})")
+    print("\n  📊 知识库统计:")
+    from skills.sqlite_skill import get_knowledge_stats
+    stats = get_knowledge_stats()
+    print(f"    总条目: {stats.get('total', 0)} | 已向量化: {stats.get('embedded', 0)}")
