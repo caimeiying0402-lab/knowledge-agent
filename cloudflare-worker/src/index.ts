@@ -175,27 +175,51 @@ function pkcs7Unpad(data: Uint8Array): Uint8Array {
 // WeChat message decryption
 // ═══════════════════════════════════════════════════════════════
 
-function decryptWechat(encB64: string, aesKeyB64: string): string {
+function hex16(d: Uint8Array, n: number): string {
+  return Array.from(d.slice(0, n), b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function decryptWechatWebCrypto(encB64: string, aesKeyB64: string): Promise<string> {
+  const keyBytes = b64decode(aesKeyB64 + "=");
+  const ciphertext = b64decode(encB64.replace(/ /g, "+"));
+  const iv = keyBytes.slice(0, 16);
+  console.log(`[wc] key=${keyBytes.length}B cipher=${ciphertext.length}B`);
+
+  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-CBC" }, false, ["decrypt"]);
+  const decrypted = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-CBC", iv }, cryptoKey, ciphertext));
+  console.log(`[wc] decrypted ${decrypted.length}B`);
+
+  if (decrypted.length < 20) throw new Error("too short");
+  const msgLen = ((decrypted[16] << 24) | (decrypted[17] << 16) | (decrypted[18] << 8) | decrypted[19]) >>> 0;
+  console.log(`[wc] msgLen=${msgLen}`);
+  if (msgLen === 0 || msgLen > decrypted.length - 20) throw new Error(`bad msgLen=${msgLen}`);
+  return new TextDecoder().decode(decrypted.subarray(20, 20 + msgLen));
+}
+
+function decryptWechatJS(encB64: string, aesKeyB64: string): string {
   const key = b64decode(aesKeyB64 + "=");
   const ciphertext = b64decode(encB64.replace(/ /g, "+"));
   const iv = key.slice(0, 16);
 
-  console.log(`[aes] key=${key.length}B cipher=${ciphertext.length}B`);
-
   const decrypted = aes256CbcDecrypt(ciphertext, key, iv);
-  console.log(`[aes] decrypted ${decrypted.length}B`);
-
   const unpadded = pkcs7Unpad(decrypted);
-  console.log(`[aes] unpadded ${unpadded.length}B`);
 
   if (unpadded.length < 20) throw new Error("too short");
-
-  // random(16) + msg_len(4, big-endian) + content
   const msgLen = ((unpadded[16] << 24) | (unpadded[17] << 16) | (unpadded[18] << 8) | unpadded[19]) >>> 0;
-  console.log(`[aes] msgLen=${msgLen}`);
   if (msgLen === 0 || msgLen > unpadded.length - 20) throw new Error(`bad msgLen=${msgLen}`);
-
   return new TextDecoder().decode(unpadded.subarray(20, 20 + msgLen));
+}
+
+async function decryptWechat(encB64: string, aesKeyB64: string): Promise<string> {
+  // Try Web Crypto API first (correct implementation), fall back to pure JS
+  try {
+    const r = await decryptWechatWebCrypto(encB64, aesKeyB64);
+    console.log("[aes] WebCrypto OK");
+    return r;
+  } catch(e: any) {
+    console.log(`[aes] WebCrypto failed (${e.message}), trying pure JS...`);
+    return decryptWechatJS(encB64, aesKeyB64);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -227,14 +251,20 @@ function rawParam(url: string, name: string): string {
   return "";
 }
 
-function parseXml(xml: string): Record<string, string> {
-  const r: Record<string, string> = {};
-  const re = /<(\w+)>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/\1>/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml)) !== null) r[m[1]] = m[2] !== undefined ? m[2] : (m[3] || "");
-  return r;
+function getEnc(body: string): string {
+  // Extract encrypted content from WeChat XML body
+  const m = body.match(/<Encrypt>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/Encrypt>/);
+  return m ? (m[1] !== undefined ? m[1] : (m[2] || "")) : "";
 }
-const getEnc = (b: string) => { const m = b.match(/<Encrypt>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/Encrypt>/); return m ? (m[1] !== undefined ? m[1] : (m[2] || "")) : ""; };
+function xmlGet(xml: string, tag: string): string {
+  // Extract <tag><![CDATA[content]]></tag> or <tag>content</tag>
+  const reCDATA = new RegExp(`<${tag}><!\\[CDATA\\[(.*?)\\]\\]></${tag}>`, 's');
+  const m1 = xml.match(reCDATA);
+  if (m1) return m1[1];
+  const rePlain = new RegExp(`<${tag}>(.*?)</${tag}>`, 's');
+  const m2 = xml.match(rePlain);
+  return m2 ? m2[1] : "";
+}
 
 let tc: { t: string; e: number } | null = null;
 async function getToken(cid: string, cs: string): Promise<string> {
@@ -276,7 +306,7 @@ async function handleVerify(req: Request, env: Env): Promise<Response> {
   console.log(`[verify] ts=${ts} echo=${echo.slice(0,30)}...`);
   if(!(await verifySig(env.WECOM_TOKEN,ts,non,echo,sig))) return new Response("bad sig",{status:403});
   try {
-    const c = decryptWechat(echo, env.WECOM_AES_KEY);
+    const c = await decryptWechat(echo, env.WECOM_AES_KEY);
     console.log(`[verify] OK: "${c}"`);
     return new Response(c,{headers:{"Content-Type":"text/plain; charset=utf-8"}});
   }catch(e:any){console.error(`[verify] ${e.message}`);return new Response(`err:${e.message}`,{status:500});}
@@ -284,17 +314,21 @@ async function handleVerify(req: Request, env: Env): Promise<Response> {
 
 async function handleMsg(req: Request, env: Env): Promise<Response> {
   const sig=rawParam(req.url,"msg_signature"), ts=rawParam(req.url,"timestamp"), non=rawParam(req.url,"nonce");
-  const body=await req.text(); const enc=getEnc(body);
+  const body=await req.text();
+  console.log(`[msg] bodyLen=${body.length} bodyHead=${body.slice(0,100)}`);
+  const enc=getEnc(body);
+  console.log(`[msg] encLen=${enc.length} encHead=${enc.slice(0,20)} encTail=${enc.slice(enc.length-20)}`);
   if(!enc)return new Response("no Encrypt",{status:400});
   if(!(await verifySig(env.WECOM_TOKEN,ts,non,enc,sig)))return new Response("bad sig",{status:403});
-  const xml=decryptWechat(enc,env.WECOM_AES_KEY);
-  const m=parseXml(xml); const mt=m["MsgType"]||"",fu=m["FromUserName"]||"u";
-  console.log(`[msg] ${mt} from ${fu}`);
+  const xml=await decryptWechat(enc,env.WECOM_AES_KEY);
+  console.log(`[msg] xml(${xml.length}B)=${xml.slice(0,250)}`);
+  const mt=xmlGet(xml,"MsgType"),fu=xmlGet(xml,"FromUserName"),ct=xmlGet(xml,"Content");
+  console.log(`[msg] mt=${mt} fu=${fu} ct=${ct.slice(0,50)}`);
   const r:any={msg_type:mt,from_user:fu};
-  if(mt==="text")r.content=m["Content"]||"";
-  else if(mt==="link"){r.url=m["Url"]||"";r.title=m["Title"]||"";r.description=m["Description"]||"";}
-  else if(mt==="image"){r.media_id=m["MediaId"]||"";if(r.media_id){const k=await imgToR2(r.media_id,env.WECOM_CORP_ID,env.WECOM_CORP_SECRET,env.IMAGES);if(k)r.image_r2_key=k;}}
-  else if(mt==="voice")r.media_id=m["MediaId"]||"";
+  if(mt==="text")r.content=ct;
+  else if(mt==="link"){r.url=xmlGet(xml,"Url");r.title=xmlGet(xml,"Title");r.description=xmlGet(xml,"Description");}
+  else if(mt==="image"){r.media_id=xmlGet(xml,"MediaId");if(r.media_id){const k=await imgToR2(r.media_id,env.WECOM_CORP_ID,env.WECOM_CORP_SECRET,env.IMAGES);if(k)r.image_r2_key=k;}}
+  else if(mt==="voice")r.media_id=xmlGet(xml,"MediaId");
   const now=Math.floor(Date.now()/1000);
   try{const res=await env.DB.prepare(`INSERT INTO messages(msg_type,from_user,content,url,title,description,media_id,image_r2_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)`).bind(mt,fu,r.content||null,r.url||null,r.title||null,r.description||null,r.media_id||null,r.image_r2_key||null,now).run();console.log(`[msg] D1 #${res.meta.last_row_id}`);}catch(e){console.error(`[msg] D1: ${e}`);}
   return new Response("success",{status:200});
