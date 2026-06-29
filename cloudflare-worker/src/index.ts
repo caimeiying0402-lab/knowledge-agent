@@ -315,15 +315,27 @@ async function handleVerify(req: Request, env: Env): Promise<Response> {
 async function handleMsg(req: Request, env: Env): Promise<Response> {
   const sig=rawParam(req.url,"msg_signature"), ts=rawParam(req.url,"timestamp"), non=rawParam(req.url,"nonce");
   const body=await req.text();
-  console.log(`[msg] bodyLen=${body.length} bodyHead=${body.slice(0,100)}`);
+  console.log(`[msg] bodyLen=${body.length} bodyHead=${body.slice(0,80)}`);
   const enc=getEnc(body);
-  console.log(`[msg] encLen=${enc.length} encHead=${enc.slice(0,20)} encTail=${enc.slice(enc.length-20)}`);
+  console.log(`[msg] encLen=${enc.length}`);
   if(!enc)return new Response("no Encrypt",{status:400});
   if(!(await verifySig(env.WECOM_TOKEN,ts,non,enc,sig)))return new Response("bad sig",{status:403});
-  const xml=await decryptWechat(enc,env.WECOM_AES_KEY);
-  console.log(`[msg] xml(${xml.length}B)=${xml.slice(0,250)}`);
-  const mt=xmlGet(xml,"MsgType"),fu=xmlGet(xml,"FromUserName"),ct=xmlGet(xml,"Content");
-  console.log(`[msg] mt=${mt} fu=${fu} ct=${ct.slice(0,50)}`);
+  let xml:string, mt="",fu="u",ct="";
+  try {
+    xml=await decryptWechat(enc,env.WECOM_AES_KEY);
+    console.log(`[msg] OK xml(${xml.length}B)=${xml.slice(0,200)}`);
+    mt=xmlGet(xml,"MsgType");fu=xmlGet(xml,"FromUserName");ct=xmlGet(xml,"Content");
+    console.log(`[msg] mt=${mt} fu=${fu} ct=${ct.slice(0,60)}`);
+  }catch(e:any){
+    console.error(`[msg] decrypt FAIL: ${e.message}`);
+    // Save raw encrypted string to D1 for offline debugging
+    try {
+      const now=Math.floor(Date.now()/1000);
+      await env.DB.prepare(`INSERT INTO messages(msg_type,from_user,content,created_at) VALUES('enc_debug','sys',?,?)`).bind(enc.slice(0,1000),now).run();
+      console.log(`[msg] saved enc_debug entry`);
+    }catch(e2){console.error(`[msg] save debug err: ${e2}`);}
+    return new Response("success",{status:200});
+  }
   const r:any={msg_type:mt,from_user:fu};
   if(mt==="text")r.content=ct;
   else if(mt==="link"){r.url=xmlGet(xml,"Url");r.title=xmlGet(xml,"Title");r.description=xmlGet(xml,"Description");}
