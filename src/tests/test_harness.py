@@ -272,6 +272,33 @@ class TestE2E(unittest.TestCase):
         self.assertIn("record_id", result)
 
 
+class TestBrowser(unittest.TestCase):
+    """浏览器渲染技能测试 — Playwright"""
+
+    def test_import_browser_skill(self):
+        """browser_skill 模块可正常导入"""
+        from skills.browser_skill import render_and_extract, stop_browser
+        self.assertTrue(callable(render_and_extract))
+        self.assertTrue(callable(stop_browser))
+
+    def test_render_static_page(self):
+        """浏览器渲染静态页面 → 返回可见文本"""
+        from skills.browser_skill import render_and_extract
+        # 用 data: URL 避免外部网络依赖
+        text = render_and_extract(
+            "data:text/html,<html><body><h1>Hello</h1><p>Test content</p></body></html>",
+            timeout=10000,
+        )
+        self.assertIsInstance(text, str)
+        self.assertIn("Hello", text)
+
+    def test_stop_browser_idempotent(self):
+        """stop_browser 可重复调用不报错"""
+        from skills.browser_skill import stop_browser
+        stop_browser()
+        stop_browser()
+
+
 # ──────────────────────────────────────────────────────────
 # 入口
 # ──────────────────────────────────────────────────────────
@@ -291,6 +318,7 @@ if __name__ == "__main__":
     suite.addTests(loader.loadTestsFromTestCase(TestSummary))
     suite.addTests(loader.loadTestsFromTestCase(TestFeishu))
     suite.addTests(loader.loadTestsFromTestCase(TestE2E))
+    suite.addTests(loader.loadTestsFromTestCase(TestBrowser))
 
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
