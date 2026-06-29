@@ -314,6 +314,13 @@ async function handleProcessed(req: Request, env: Env): Promise<Response> {
   await env.DB.prepare(`UPDATE messages SET processed=1,processed_at=? WHERE id IN (${ph})`).bind(Math.floor(Date.now()/1000),...ids).run();
   return Response.json({ok:true});
 }
+async function handleStats(req: Request, env: Env): Promise<Response> {
+  if(!chkApi(req,env.SYNC_API_KEY))return new Response("unauth",{status:401});
+  const pending=await env.DB.prepare(`SELECT COUNT(*) as c FROM messages WHERE processed=0`).first();
+  const total=await env.DB.prepare(`SELECT COUNT(*) as c FROM messages`).first();
+  const latest=await env.DB.prepare(`SELECT MAX(created_at) as ts FROM messages`).first();
+  return Response.json({pending:(pending as any).c,total:(total as any).c,latest_ts:(latest as any).ts});
+}
 async function handleImageGet(req: Request, env: Env, key: string): Promise<Response> {
   if(!chkApi(req,env.SYNC_API_KEY))return new Response("unauth",{status:401});
   const o=await env.IMAGES.get(key);
@@ -333,6 +340,7 @@ export default {
       if(p==="/api/processed"&&m==="POST")return handleProcessed(req,env);
       if(p.startsWith("/api/image/")&&m==="GET")return handleImageGet(req,env,decodeURIComponent(p.slice(11)));
       if(p==="/health"&&m==="GET")return Response.json({ok:true,ts:Math.floor(Date.now()/1000)});
+      if(p==="/api/stats"&&m==="GET")return handleStats(req,env);
       return new Response("nf",{status:404});
     }catch(e){console.error(`[fatal] ${e}`);return new Response("err",{status:500});}
   },

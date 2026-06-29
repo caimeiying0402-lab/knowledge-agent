@@ -1,5 +1,5 @@
 """
-cloud_sync_skill.py — 云端同步技能
+cloud_sync_skill.py — 云端同步技能 (v2: 重试 + 健康监控)
 
 从 Cloudflare Worker (D1) 拉取企微消息并在本地跑 ETL 处理。
 Mac 开机后运行此脚本，处理积压消息。
@@ -9,7 +9,7 @@ Mac 开机后运行此脚本，处理积压消息。
   PYTHONPATH=src python src/skills/cloud_sync_skill.py
 
 环境变量 (config/.env):
-  CF_WORKER_URL     Worker URL, 如 https://knowledge-agent-webhook.xxx.workers.dev
+  CF_WORKER_URL     Worker URL, 如 https://wechat.your-domain.top
   CF_SYNC_API_KEY   同步 API 认证密钥
   INBOX_DIR         图片下载目录, 默认 data/inbox/
 """
@@ -18,7 +18,9 @@ import os
 import sys
 import logging
 import time
+import random
 from pathlib import Path
+from functools import wraps
 
 import requests
 from dotenv import load_dotenv
@@ -47,12 +49,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ── 重试工具 ──────────────────────────────────────────────────────
+
+def retry(max_retries: int = 3, base_delay: float = 1.0):
+    """装饰器：指数退避自动重试 HTTP 请求"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_err = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except requests.exceptions.Timeout as e:
+                    last_err = e
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                        logger.warning(f"{func.__name__} 超时，{delay:.1f}s 后重试 ({attempt+1}/{max_retries})")
+                        time.sleep(delay)
+                except requests.exceptions.ConnectionError as e:
+                    last_err = e
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                        logger.warning(f"{func.__name__} 连接失败，{delay:.1f}s 后重试 ({attempt+1}/{max_retries})")
+                        time.sleep(delay)
+                except requests.exceptions.HTTPError as e:
+                    # 5xx 重试，4xx 不重试
+                    if e.response is not None and e.response.status_code >= 500:
+                        last_err = e
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"{func.__name__} HTTP {e.response.status_code}，{delay:.1f}s 后重试 ({attempt+1}/{max_retries})")
+                            time.sleep(delay)
+                    else:
+                        raise
+            raise last_err
+        return wrapper
+    return decorator
+
+
 # ── API 调用 ────────────────────────────────────────────────────
 
 def _headers() -> dict:
     return {"Authorization": f"Bearer {CF_SYNC_API_KEY}"}
 
 
+@retry(max_retries=3)
 def fetch_pending(limit: int = 50) -> list[dict]:
     """从 Worker 拉取未处理消息"""
     resp = requests.get(
@@ -65,6 +106,7 @@ def fetch_pending(limit: int = 50) -> list[dict]:
     return resp.json().get("messages", [])
 
 
+@retry(max_retries=3)
 def mark_processed(ids: list[int]) -> bool:
     """标记消息为已处理"""
     resp = requests.post(
@@ -73,9 +115,11 @@ def mark_processed(ids: list[int]) -> bool:
         headers=_headers(),
         timeout=30,
     )
-    return resp.status_code == 200
+    resp.raise_for_status()
+    return True
 
 
+@retry(max_retries=2)
 def download_image(r2_key: str) -> Path:
     """从 Worker 下载 R2 中的图片到本地 inbox"""
     local_path = INBOX_DIR / r2_key
@@ -90,6 +134,28 @@ def download_image(r2_key: str) -> Path:
     local_path.write_bytes(resp.content)
     logger.info(f"图片已下载: {local_path} ({len(resp.content)} bytes)")
     return local_path
+
+
+@retry(max_retries=2)
+def get_stats() -> dict | None:
+    """获取 Worker 端消息统计"""
+    resp = requests.get(
+        f"{CF_WORKER_URL}/api/stats",
+        headers=_headers(),
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def check_health() -> bool:
+    """检查 Worker 是否可达"""
+    try:
+        resp = requests.get(f"{CF_WORKER_URL}/health", timeout=5)
+        return resp.status_code == 200
+    except Exception as e:
+        logger.warning(f"Worker 健康检查失败: {e}")
+        return False
 
 
 # ── ETL 处理 ────────────────────────────────────────────────────
@@ -107,13 +173,35 @@ def _run_etl(source: str) -> dict | None:
 # ── 主流程 ──────────────────────────────────────────────────────
 
 def sync_once():
-    """执行一次同步：拉取 → 处理 → 标记"""
+    """执行一次同步：健康检查 → 拉取 → 处理 → 标记 → 统计"""
     if not CF_WORKER_URL or not CF_SYNC_API_KEY:
         logger.error("缺少 CF_WORKER_URL 或 CF_SYNC_API_KEY 环境变量")
         return
 
+    # ── 健康检查 ──
+    if not check_health():
+        logger.error("Worker 不可达，跳过本次同步")
+        return
+
+    # ── 统计概览 ──
+    try:
+        stats = get_stats()
+        if stats:
+            logger.info(
+                f"Worker 状态: 待处理={stats.get('pending', '?')} "
+                f"总数={stats.get('total', '?')} "
+                f"最新消息={stats.get('latest_ts', '?')}"
+            )
+    except Exception:
+        logger.debug("无法获取 Worker 统计")
+
     logger.info("开始云端同步...")
-    messages = fetch_pending()
+    try:
+        messages = fetch_pending()
+    except Exception as e:
+        logger.error(f"拉取消息失败(已重试): {e}")
+        return
+
     if not messages:
         logger.info("没有待处理消息")
         return
@@ -121,6 +209,7 @@ def sync_once():
     logger.info(f"拉取到 {len(messages)} 条待处理消息")
     processed_ids = []
     failed_count = 0
+    success_types = {"text": 0, "link": 0, "image": 0, "voice": 0}
 
     for msg in messages:
         msg_id = msg.get("id", "?")
@@ -132,6 +221,7 @@ def sync_once():
                     record = _run_etl(content)
                     if record:
                         logger.info(f"✅ [text] id={msg_id} → {record.get('title', '')[:50]}")
+                        success_types["text"] += 1
                     else:
                         logger.warning(f"⚠️ [text] id={msg_id} ETL返回空")
                 else:
@@ -146,6 +236,7 @@ def sync_once():
                     record = _run_etl(source)
                     if record:
                         logger.info(f"✅ [link] id={msg_id} → {record.get('title', '')[:50]}")
+                        success_types["link"] += 1
                     else:
                         logger.warning(f"⚠️ [link] id={msg_id} ETL返回空")
                 else:
@@ -156,15 +247,20 @@ def sync_once():
                 media_id = msg.get("media_id")
 
                 if image_r2_key:
-                    # 从 R2 下载
-                    img_path = download_image(image_r2_key)
-                    record = _run_etl(str(img_path))
-                    if record:
-                        logger.info(f"✅ [image] id={msg_id} → {record.get('title', '')[:50]}")
-                    else:
-                        logger.warning(f"⚠️ [image] id={msg_id} ETL返回空")
+                    try:
+                        img_path = download_image(image_r2_key)
+                        record = _run_etl(str(img_path))
+                        if record:
+                            logger.info(f"✅ [image] id={msg_id} → {record.get('title', '')[:50]}")
+                            success_types["image"] += 1
+                        else:
+                            logger.warning(f"⚠️ [image] id={msg_id} ETL返回空")
+                    except Exception as e2:
+                        logger.error(f"❌ [image] id={msg_id} R2下载失败: {e2}")
+                        failed_count += 1
+                        continue  # 不标记已处理，下次重试
+
                 elif media_id:
-                    # 降级：尝试从企微直接下载（3天内有效）
                     logger.info(f"[image] id={msg_id} 无R2 key，尝试企微降级下载...")
                     try:
                         from skills.wechat_webhook import _get_access_token, _download_image
@@ -173,11 +269,15 @@ def sync_once():
                         record = _run_etl(str(img_path))
                         if record:
                             logger.info(f"✅ [image·降级] id={msg_id} → {record.get('title', '')[:50]}")
+                            success_types["image"] += 1
                     except Exception as e2:
                         logger.error(f"❌ [image·降级] id={msg_id} 失败: {e2}")
+                        failed_count += 1
+                        continue
 
             elif msg_type == "voice":
                 logger.info(f"⏭️ [voice] id={msg_id} 语音消息暂不处理")
+                success_types["voice"] += 1
 
             else:
                 logger.info(f"⏭️ [{msg_type}] id={msg_id} 未知消息类型，跳过")
@@ -187,16 +287,26 @@ def sync_once():
         except Exception as e:
             logger.error(f"❌ 处理失败: id={msg_id}, type={msg_type}, error={e}")
             failed_count += 1
-            # 仍然标记为已处理，避免反复重试同一条失败消息
+            # 网络/临时错误不标记已处理，下次重试
+            if isinstance(e, (requests.RequestException, OSError)):
+                continue
             processed_ids.append(msg_id)
 
-    # 批量标记已处理
+    # ── 批量标记已处理 ──
     if processed_ids:
-        success = mark_processed(processed_ids)
-        if success:
-            logger.info(f"同步完成: {len(processed_ids)} 条已处理, {failed_count} 条失败")
-        else:
-            logger.error("标记已处理失败，下次同步将重复处理")
+        try:
+            mark_processed(processed_ids)
+        except Exception as e:
+            logger.error(f"标记已处理失败(已重试): {e}，下次同步将重复处理")
+            return
+
+    # ── 同步报告 ──
+    total_success = sum(success_types.values())
+    logger.info(
+        f"同步完成: {total_success} 成功 / {failed_count} 失败 / "
+        f"分类: text={success_types['text']} link={success_types['link']} "
+        f"image={success_types['image']} voice={success_types['voice']}"
+    )
 
     return len(processed_ids)
 
@@ -204,13 +314,28 @@ def sync_once():
 def sync_loop(interval: int = 300):
     """循环同步模式（每 interval 秒拉取一次）"""
     logger.info(f"启动循环同步模式，间隔 {interval} 秒")
+    fail_streak = 0
+
     while True:
         try:
-            sync_once()
+            count = sync_once()
+            if count is None:
+                fail_streak += 1
+                # 连续失败时增加等待时间（最长 5 分钟）
+                backoff = min(interval, 60 * fail_streak)
+                logger.info(f"同步失败，{backoff}s 后重试...")
+                time.sleep(backoff)
+            else:
+                fail_streak = 0
+                logger.info(f"下次同步: {interval} 秒后")
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            logger.info("收到中断信号，退出同步")
+            break
         except Exception as e:
             logger.error(f"同步异常: {e}")
-        logger.info(f"下次同步: {interval} 秒后")
-        time.sleep(interval)
+            fail_streak += 1
+            time.sleep(min(interval, 60 * fail_streak))
 
 
 # ── 入口 ─────────────────────────────────────────────────────────
@@ -221,12 +346,29 @@ if __name__ == "__main__":
     parser.add_argument("--loop", action="store_true", help="循环同步模式")
     parser.add_argument("--interval", type=int, default=300, help="循环间隔秒数 (默认 300)")
     parser.add_argument("--limit", type=int, default=50, help="每次拉取上限 (默认 50)")
+    parser.add_argument("--stats", action="store_true", help="仅显示 Worker 端统计信息")
     args = parser.parse_args()
 
     # 确保 logs 目录
     (BASE_DIR / "logs").mkdir(parents=True, exist_ok=True)
 
-    if args.loop:
+    if args.stats:
+        if check_health():
+            print("Worker 状态: 在线 ✅")
+            try:
+                stats = get_stats()
+                if stats:
+                    print(f"  待处理消息: {stats.get('pending', '?')}")
+                    print(f"  总消息数:   {stats.get('total', '?')}")
+                    ts = stats.get('latest_ts')
+                    if ts:
+                        from datetime import datetime
+                        print(f"  最新消息:   {datetime.fromtimestamp(ts)}")
+            except Exception as e:
+                print(f"获取统计失败: {e}")
+        else:
+            print("Worker 状态: 离线 ❌")
+    elif args.loop:
         sync_loop(interval=args.interval)
     else:
         sync_once()
