@@ -1,6 +1,6 @@
 # Knowledge Agent — 进度与后续操作说明
 
-> 最后更新：2026-06-28
+> 最后更新：2026-07-01
 > 目标读者：人类开发者 + AI Agent（Codex / Trae / Claude Code）
 > 仓库：git@github.com:caimeiying0402-lab/knowledge-agent.git
 > 本地路径：/Users/caimeiying/AI-Agent-Lab/knowledge-agent
@@ -13,18 +13,21 @@
 
 | 层 | 名称 | 完成度 | 状态 |
 |---|------|--------|------|
-| 1 | 数据采集层 | 85% | 🟡 企微主链路已通，JS渲染网站待解决 |
+| 1 | 数据采集层 | 95% | 🟢 企微云端链路完成，JS渲染已解决 |
 | 2 | 数据处理层 | 90% | 🟢 v2 完成，19分类体系运行中 |
-| 3 | 知识层 | 25% | 🔴 仅飞书多维表格，缺SQLite和向量库 |
+| 3 | 知识层 | 60% | 🟡 SQLite + Chroma 已实现，Embedding 待修复 |
 | 4 | Agent层 | 30% | 🔴 仅Knowledge Agent，缺Career/Discovery |
 | 5 | 学习层 | 0% | 🔴 未开工 |
 | 6 | 推荐层 | 0% | 🔴 未开工 |
 
 **已完成（可直接使用）：**
 - 文字/URL/图片输入 → DeepSeek AI摘要（19分类）→ 飞书多维表格 全链路
-- 企业微信自建应用消息接收（**主采集端**，企微成员 → Cloudflare Worker → D1 排队 → 本地同步 ETL，待迁移）
+- 企业微信自建应用消息接收（**主采集端**，企微 → Cloudflare Worker → D1 排队 → 本地同步 ETL，✅ 云端化完成）
 - 微信客服消息轮询（个人微信 → sync_msg API → ETL，备用入口，有频率限制）
 - PaddleOCR 本地图片识别（零API成本）
+- Headless 浏览器抓取（Playwright，解决小红书/公众号 JS 渲染）
+- SQLite 本地知识库（31条记录，支持关键词/分类/标签查询）
+- Chroma 向量库 + RAG 语义检索（24条向量化）
 
 ---
 
@@ -70,22 +73,31 @@ Pillow          # 测试图片生成
 
 ## 三、后续任务（按优先级排序）
 
-### P0：企微链路云端化（Flask → Cloudflare Worker + D1）
+### P0：企微链路云端化（Flask → Cloudflare Worker + D1）✅ 已完成
 
-> **进度：90%** | 2026-06-28 已部署，签名通过，AES 解密调试中
+> **进度：100%** | 2026-07-01 E2E 全链路验证通过
 
-**已部署（2026-06-28）：**
-- ✅ Worker `https://knowledge-agent-webhook.knowledge-agent.workers.dev`
+**已完成：**
+- ✅ Worker `https://knowledge-agent-webhook.knowledge-agent.workers.dev` (v8)
+- ✅ 自定义域名 `https://wechat.happymia.top`（国内企微可访问）
 - ✅ D1 `knowledge-agent-messages`（id: a762fdcf-...）
 - ✅ R2 `knowledge-agent-images`
 - ✅ 全部 secrets 配置
 - ✅ `cloud_sync_skill.py` + `start_wechat.sh` sync 模式就绪
-- ⚠️ **阻塞**：AES-CBC 解密 — key=32B cipher=64B 长度正确但 `crypto.subtle.decrypt` 报错。签名验证已通过。
-- **明天**：对比 Python/JS 解密 hex，定位 Web Crypto API 差异
+- ✅ AES-CBC 解密（Web Crypto API + 纯 JS fallback，v7 起修复）
+- ✅ 回调 URL 验证通过（2026-06-29，自定义域名解决）
+- ✅ E2E 全链路验证通过（2026-07-01，加密→POST→解密→D1→同步→ETL→SQLite/飞书）
+- ✅ 企微链路加固（P1 错误重试 + 健康监控 + 统计端点）
+
+**2026-07-01 修复：**
+- `getEnc()` 正则表达式添加 `s` 标志（支持跨行 XML CDATA）
+- 提取密文后 strip 所有空白字符（防止换行/空格污染 base64）
+- 解密前校验密文长度为 16 的倍数（快速失败）
+- 增强 enc_debug 日志（保存更多上下文信息）
 
 **原始问题：** 企微自建应用通过本地 Flask Webhook + Cloudflare Tunnel 接收消息，Mac 关机则消息丢失。
 
-**目标：** 将消息接收搬到云端（Cloudflare Worker），Mac 关机时消息自动排队，开机后同步处理。
+**目标（已达成）：** 将消息接收搬到云端（Cloudflare Worker），Mac 关机时消息自动排队，开机后同步处理。
 
 **架构变更：**
 
@@ -1074,19 +1086,21 @@ CREATE TABLE user_behaviors (
 ## 四、执行顺序建议
 
 ```
-Phase 0（当前，1-2天）:
+Phase 0（已完成 ✅）:
   └── P0: 企微链路云端化 → Cloudflare Worker + D1 + R2，Mac 可关机
+  └── P1: 企微链路加固 → 错误重试、消息回执、健康监控
 
-Phase 1（2-3天）:
-  ├── P1: 企微链路加固 → 错误重试、消息回执、健康监控
+Phase 1（已完成 ✅）:
   └── P1-1: Headless 浏览器 → 解决小红书/公众号抓取
 
-Phase 2（1-2周）:
+Phase 2（已完成 ✅）:
   ├── P2-1: SQLite 本地库 → 离线存储能力
-  ├── P2-2: Chroma 向量库 → RAG 检索
+  └── P2-2: Chroma 向量库 → RAG 检索
+
+Phase 3（当前，1-2周）:
   └── P3-1: Career Agent → 简历解析 + 匹配
 
-Phase 3（2-4周）:
+Phase 4（2-4周）:
   ├── P3-2: Discovery Agent → 规则挖掘
   ├── Layer 5: Learning Layer → 用户行为采集
   └── Layer 6: Recommendation Layer → 智能推荐

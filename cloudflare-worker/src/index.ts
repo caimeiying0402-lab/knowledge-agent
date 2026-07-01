@@ -182,6 +182,12 @@ function hex16(d: Uint8Array, n: number): string {
 async function decryptWechatWebCrypto(encB64: string, aesKeyB64: string): Promise<string> {
   const keyBytes = b64decode(aesKeyB64 + "=");
   const ciphertext = b64decode(encB64.replace(/ /g, "+"));
+
+  // Validate: ciphertext must be multiple of 16 bytes
+  if (ciphertext.length % 16 !== 0) {
+    throw new Error(`bad cipher len ${ciphertext.length} (not multiple of 16)`);
+  }
+
   const iv = keyBytes.slice(0, 16);
   console.log(`[wc] key=${keyBytes.length}B cipher=${ciphertext.length}B`);
 
@@ -199,6 +205,12 @@ async function decryptWechatWebCrypto(encB64: string, aesKeyB64: string): Promis
 function decryptWechatJS(encB64: string, aesKeyB64: string): string {
   const key = b64decode(aesKeyB64 + "=");
   const ciphertext = b64decode(encB64.replace(/ /g, "+"));
+
+  // Validate: ciphertext must be multiple of 16 bytes
+  if (ciphertext.length % 16 !== 0) {
+    throw new Error(`bad cipher len ${ciphertext.length} (not multiple of 16)`);
+  }
+
   const iv = key.slice(0, 16);
 
   const decrypted = aes256CbcDecrypt(ciphertext, key, iv);
@@ -253,8 +265,12 @@ function rawParam(url: string, name: string): string {
 
 function getEnc(body: string): string {
   // Extract encrypted content from WeChat XML body
-  const m = body.match(/<Encrypt>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/Encrypt>/);
-  return m ? (m[1] !== undefined ? m[1] : (m[2] || "")) : "";
+  // 's' flag is critical: WeChat XML may contain newlines
+  const m = body.match(/<Encrypt>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/Encrypt>/s);
+  if (!m) return "";
+  const raw = m[1] !== undefined ? m[1] : (m[2] || "");
+  // Strip all whitespace (newlines, spaces, tabs) — base64 has none
+  return raw.replace(/\s+/g, "");
 }
 function xmlGet(xml: string, tag: string): string {
   // Extract <tag><![CDATA[content]]></tag> or <tag>content</tag>
@@ -315,9 +331,9 @@ async function handleVerify(req: Request, env: Env): Promise<Response> {
 async function handleMsg(req: Request, env: Env): Promise<Response> {
   const sig=rawParam(req.url,"msg_signature"), ts=rawParam(req.url,"timestamp"), non=rawParam(req.url,"nonce");
   const body=await req.text();
-  console.log(`[msg] bodyLen=${body.length} bodyHead=${body.slice(0,80)}`);
+  console.log(`[msg] bodyLen=${body.length} bodyHead=${body.slice(0,120)}`);
   const enc=getEnc(body);
-  console.log(`[msg] encLen=${enc.length}`);
+  console.log(`[msg] encLen=${enc.length} encHead=${enc.slice(0,40)}`);
   if(!enc)return new Response("no Encrypt",{status:400});
   if(!(await verifySig(env.WECOM_TOKEN,ts,non,enc,sig)))return new Response("bad sig",{status:403});
   let xml:string, mt="",fu="u",ct="";
@@ -327,12 +343,13 @@ async function handleMsg(req: Request, env: Env): Promise<Response> {
     mt=xmlGet(xml,"MsgType");fu=xmlGet(xml,"FromUserName");ct=xmlGet(xml,"Content");
     console.log(`[msg] mt=${mt} fu=${fu} ct=${ct.slice(0,60)}`);
   }catch(e:any){
-    console.error(`[msg] decrypt FAIL: ${e.message}`);
-    // Save raw encrypted string to D1 for offline debugging
+    console.error(`[msg] decrypt FAIL: ${e.message} stack=${e.stack?.slice(0,200)}`);
+    // Save debug info for offline analysis
     try {
       const now=Math.floor(Date.now()/1000);
-      await env.DB.prepare(`INSERT INTO messages(msg_type,from_user,content,created_at) VALUES('enc_debug','sys',?,?)`).bind(enc.slice(0,1000),now).run();
-      console.log(`[msg] saved enc_debug entry`);
+      const debugInfo = JSON.stringify({encLen:enc.length,bodyLen:body.length,err:e.message,ts:now});
+      await env.DB.prepare(`INSERT INTO messages(msg_type,from_user,content,description,created_at) VALUES('enc_debug','sys',?,?,?)`).bind(enc.slice(0,2000),debugInfo,now).run();
+      console.log(`[msg] saved enc_debug: encLen=${enc.length} bodyLen=${body.length}`);
     }catch(e2){console.error(`[msg] save debug err: ${e2}`);}
     return new Response("success",{status:200});
   }
