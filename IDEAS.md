@@ -22,7 +22,7 @@
 2. 只能电脑端么 我的手机似乎还没有拥抱AI
 3. knowledgeagent 还需要MAC开机启动才能哦同步飞书
 4. knowledge agent现在创建的飞书表格的skill看看需不需要再优化
-5. 
+5.  knowledge agent输入端转到个人微信 输出端转到飞书文档/或orbisidian
 
 
 ---
