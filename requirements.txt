@@ -6,3 +6,4 @@ playwright
 chromadb
 gunicorn
 pycryptodome
+pyyaml
