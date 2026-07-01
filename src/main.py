@@ -1,8 +1,5 @@
-"""Knowledge Agent 主流程 v4：ingest → summarize → feishu + sqlite + chroma
-v4: macOS x86_64 兼容版
-  - Embedding: 百炼 API / ChromaDB ONNX（不再依赖 PyTorch 2.4+）
-  - ChromaDB 自动 embedding（无需手动向量化也能入库和检索）
-  - SQLite 双写 + 异步 Embedding 向量化 + RAG 检索就绪
+"""Knowledge Agent 主流程 v5：ingest → summarize → structured_format → feishu + sqlite + chroma
+v5: 结构化格式化 skill 接入，飞书展示改为用户偏好的编号层级风格
 """
 import uuid
 import logging
@@ -10,6 +7,7 @@ import threading
 from datetime import datetime
 from skills.ingestion_skill import ingest
 from skills.summary_skill import summarize
+from skills.structured_format_skill import format_structured
 from skills.feishu_skill import write_to_bitable
 
 logger = logging.getLogger(__name__)
@@ -40,18 +38,29 @@ def process(source: str) -> dict:
     # ── 2. 结构化摘要（传递平台上下文）──
     summary_result = summarize(raw_content, platform=platform)
 
-    # ── 3. 智能处理 full_content ──
-    full_content = _smart_truncate(raw_content, max_chars=5000)
+    # ── 2.5 结构化格式化：转为编号层级笔记 ──
+    structured_note = format_structured(
+        title=summary_result.get("title", ""),
+        summary=summary_result.get("summary", ""),
+        highlights=summary_result.get("highlights", []),
+        raw_content=raw_content,
+        tags=summary_result.get("tags", []),
+    )
+
+    # ── 3. full_content：结构化笔记为主，原文为辅 ──
+    full_content = structured_note if structured_note else _smart_truncate(raw_content)
 
     # ── 4. 构建完整记录 ──
+    # 注意：调试用字段（source_path/id/tags等）仍保留在 SQLite/日志，
+    # 飞书仅展示 title + full_content(结构化笔记) + category
     record = {
         "id": str(uuid.uuid4()),
         "source_type": platform,
         "source_path": source_url,
         "title": summary_result.get("title", ""),
-        "summary": summary_result.get("summary", ""),
+        "summary": summary_result.get("summary", ""),  # 飞书中隐藏，仅供调试
         "full_content": full_content,
-        "highlights": summary_result.get("highlights", []),
+        "highlights": summary_result.get("highlights", []),  # 已内嵌到 structured_note
         "tags": summary_result.get("tags", []),
         "category": summary_result.get("category", ""),
         "source_quality": summary_result.get("source_quality", ""),
@@ -142,23 +151,17 @@ def _print_success(record: dict, platform: str):
     """可视化输出入库结果"""
     title = record.get("title", "")[:40]
     category = record.get("category", "")
-    tags = "、".join(record.get("tags", [])[:5])
-    highlights = record.get("highlights", [])
-    quality = record.get("source_quality", "")
-    actionable = record.get("actionable", "")
     platform_label = PLATFORM_LABELS.get(platform, f"📌 {platform}")
+    structured = record.get("full_content", "")
 
     print(f"✅ 入库成功: {title}")
-    print(f"   来源: {platform_label}")
-    print(f"   分类: {category} | 标签: {tags}")
-    if quality:
-        quality_map = {"high": "⭐高", "medium": "●中", "low": "○低"}
-        print(f"   质量: {quality_map.get(quality, quality)} | "
-              f"可行动: {'✓是' if actionable else '✗否'}")
-    if highlights:
-        print(f"   亮点: {len(highlights)}条")
-        for h in highlights:
-            print(f"     • {h}")
+    print(f"   来源: {platform_label} | 分类: {category}")
+    if structured:
+        # 显示结构化笔记的前几行作为预览
+        lines = structured.strip().split("\n")
+        preview_lines = [l for l in lines[:8] if l.strip()]
+        for l in preview_lines:
+            print(f"   {l}")
 
 
 if __name__ == "__main__":
