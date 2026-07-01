@@ -44,10 +44,11 @@ PIDS=()
 # ── 云端同步（从 Cloudflare Worker 拉取积压消息 → 本地 ETL）───
 if [ "$MODE" = "all" ] || [ "$MODE" = "sync" ]; then
     echo ""
-    echo "[启动] 云端同步服务（Cloudflare Worker → 本地 ETL）..."
+    echo "[启动] 实时云端同步服务（每60s轮询，有消息30s加速）..."
     echo "  ✅ Mac 关机时消息自动排队到 D1"
     echo "  ✅ 开机后自动拉取处理"
-    python src/skills/cloud_sync_skill.py &
+    echo "  ✅ URL 自动展开抓取"
+    python src/skills/cloud_sync_skill.py --loop --interval 60 &
     SYNC_PID=$!
     PIDS+=($SYNC_PID)
     sleep 2

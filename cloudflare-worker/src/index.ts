@@ -214,12 +214,13 @@ function decryptWechatJS(encB64: string, aesKeyB64: string): string {
   const iv = key.slice(0, 16);
 
   const decrypted = aes256CbcDecrypt(ciphertext, key, iv);
-  const unpadded = pkcs7Unpad(decrypted);
+  // NOTE: Do NOT use PKCS7 unpadding — WeChat uses non-standard space padding
+  // for messages with large content. Use msg_len field to determine boundary.
 
-  if (unpadded.length < 20) throw new Error("too short");
-  const msgLen = ((unpadded[16] << 24) | (unpadded[17] << 16) | (unpadded[18] << 8) | unpadded[19]) >>> 0;
-  if (msgLen === 0 || msgLen > unpadded.length - 20) throw new Error(`bad msgLen=${msgLen}`);
-  return new TextDecoder().decode(unpadded.subarray(20, 20 + msgLen));
+  if (decrypted.length < 20) throw new Error("too short");
+  const msgLen = ((decrypted[16] << 24) | (decrypted[17] << 16) | (decrypted[18] << 8) | decrypted[19]) >>> 0;
+  if (msgLen === 0 || msgLen > decrypted.length - 20) throw new Error(`bad msgLen=${msgLen}`);
+  return new TextDecoder().decode(decrypted.subarray(20, 20 + msgLen));
 }
 
 async function decryptWechat(encB64: string, aesKeyB64: string): Promise<string> {

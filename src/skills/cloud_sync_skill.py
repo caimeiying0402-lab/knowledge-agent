@@ -170,6 +170,45 @@ def _run_etl(source: str) -> dict | None:
         return None
 
 
+def _extract_urls(text: str) -> list[str]:
+    """从文本中提取所有 URL"""
+    import re
+    url_pattern = re.compile(
+        r'https?://[^\s一-鿿　-〿＀-￯]+'
+    )
+    urls = url_pattern.findall(text)
+    # Deduplicate while preserving order
+    seen = set()
+    result = []
+    for u in urls:
+        u = u.rstrip('.,;:!?')  # Strip trailing punctuation
+        if u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
+
+
+def _run_etl_url(url: str) -> dict | None:
+    """通过 ingestion_skill 摄入 URL 内容（展开短链接 + 抓取页面）"""
+    try:
+        from skills.ingestion_skill import ingest
+        ingest_result = ingest(url)
+        raw_content = ingest_result.get("raw_content", "")
+        platform = ingest_result.get("platform", "link")
+        if raw_content and len(raw_content) > 50:
+            logger.info(f"URL 内容获取成功: {platform} {len(raw_content)}字")
+            # Build enriched source for ETL
+            from main import process as etl_process
+            return etl_process(raw_content)
+        else:
+            # Content too short, fall back to treating URL as text
+            logger.warning(f"URL 内容不足({len(raw_content)}字)，降级为文本处理")
+            return _run_etl(url)
+    except Exception as e:
+        logger.warning(f"URL 抓取失败({e})，降级为文本处理")
+        return _run_etl(url)
+
+
 # ── 主流程 ──────────────────────────────────────────────────────
 
 def sync_once():
@@ -217,23 +256,36 @@ def sync_once():
         try:
             if msg_type == "text":
                 content = msg.get("content", "")
-                if content.strip():
+                if not content.strip():
+                    logger.warning(f"⚠️ [text] id={msg_id} 内容为空，跳过")
+                    continue
+
+                # Check for URLs in text — expand and fetch actual page content
+                urls = _extract_urls(content)
+                if urls:
+                    logger.info(f"🔗 [text] id={msg_id} 检测到 {len(urls)} 个URL: {urls[0][:60]}...")
+                    for url in urls:
+                        record = _run_etl_url(url)
+                        if record:
+                            logger.info(f"✅ [link] id={msg_id} → {record.get('title', '')[:50]}")
+                            success_types["link"] += 1
+                        else:
+                            logger.warning(f"⚠️ [link] id={msg_id} URL抓取返回空")
+                    processed_ids.append(msg_id)
+                else:
                     record = _run_etl(content)
                     if record:
                         logger.info(f"✅ [text] id={msg_id} → {record.get('title', '')[:50]}")
                         success_types["text"] += 1
                     else:
                         logger.warning(f"⚠️ [text] id={msg_id} ETL返回空")
-                else:
-                    logger.warning(f"⚠️ [text] id={msg_id} 内容为空，跳过")
 
             elif msg_type == "link":
                 url = msg.get("url", "")
                 title = msg.get("title", "")
                 desc = msg.get("description", "")
-                source = url if url else f"{title}\n{desc}"
-                if source.strip():
-                    record = _run_etl(source)
+                if url:
+                    record = _run_etl_url(url)
                     if record:
                         logger.info(f"✅ [link] id={msg_id} → {record.get('title', '')[:50]}")
                         success_types["link"] += 1
@@ -311,9 +363,11 @@ def sync_once():
     return len(processed_ids)
 
 
-def sync_loop(interval: int = 300):
-    """循环同步模式（每 interval 秒拉取一次）"""
-    logger.info(f"启动循环同步模式，间隔 {interval} 秒")
+def sync_loop(interval: int = 60):
+    """循环同步模式 — 智能轮询：有消息时 30s，空闲时 60s"""
+    logger.info(f"启动实时同步模式（每 {interval}s 轮询 Worker）")
+    idle_interval = max(interval, 60)   # idle: 60s
+    active_interval = max(interval // 2, 30)  # active: 30s
     fail_streak = 0
 
     while True:
@@ -321,21 +375,23 @@ def sync_loop(interval: int = 300):
             count = sync_once()
             if count is None:
                 fail_streak += 1
-                # 连续失败时增加等待时间（最长 5 分钟）
-                backoff = min(interval, 60 * fail_streak)
+                backoff = min(300, 30 * fail_streak)
                 logger.info(f"同步失败，{backoff}s 后重试...")
                 time.sleep(backoff)
+            elif count > 0:
+                fail_streak = 0
+                logger.info(f"处理后继续监听（{active_interval}s 间隔）")
+                time.sleep(active_interval)
             else:
                 fail_streak = 0
-                logger.info(f"下次同步: {interval} 秒后")
-                time.sleep(interval)
+                time.sleep(idle_interval)
         except KeyboardInterrupt:
             logger.info("收到中断信号，退出同步")
             break
         except Exception as e:
             logger.error(f"同步异常: {e}")
             fail_streak += 1
-            time.sleep(min(interval, 60 * fail_streak))
+            time.sleep(min(300, 30 * fail_streak))
 
 
 # ── 入口 ─────────────────────────────────────────────────────────
@@ -344,7 +400,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="云端同步: 从 Cloudflare Worker 拉取企微消息并本地处理")
     parser.add_argument("--loop", action="store_true", help="循环同步模式")
-    parser.add_argument("--interval", type=int, default=300, help="循环间隔秒数 (默认 300)")
+    parser.add_argument("--interval", type=int, default=60, help="轮询间隔秒数 (默认 60)")
     parser.add_argument("--limit", type=int, default=50, help="每次拉取上限 (默认 50)")
     parser.add_argument("--stats", action="store_true", help="仅显示 Worker 端统计信息")
     args = parser.parse_args()
