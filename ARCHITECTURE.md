@@ -225,17 +225,90 @@ Worker 做不了的：OCR、浏览器渲染、ONNX embedding    → 必须 Mac
 
 ---
 
-## 四、Job Agent（下一阶段）
+## 四、Job Agent（当前阶段 🚧）
 
-> 业务目的：简历 × 岗位 JD 自动匹配评分，辅助求职决策
+> 业务目的：简历 × 岗位 JD 自动匹配评分，每日定时推送高匹配岗位，辅助求职决策
+> 
+> 完整开发规格书：`docs/JOB_AGENT_SPEC.md`
+> 简历数据文件：`src/agents/resume_profile.json`
+
+### 4.1 完整架构
 
 ```
-简历(PDF/文本) → resume_skill(DeepSeek结构化提取) → match_skill(匹配评分)
-                                                         ↑
-                              岗位JD ← job_search_skill(BOSS/猎聘抓取)
+src/agents/career_agent.py              ← 主控调度
+  ├─ src/skills/resume_skill.py         ← 简历PDF解析 → 结构化JSON
+  ├─ src/skills/job_search_skill.py     ← BOSS直聘/猎聘 Playwright搜索+反爬
+  ├─ src/skills/match_skill.py          ← DeepSeek 匹配评分 0-100
+  ├─ src/skills/resume_generator_skill.py ← 针对岗位定制简历
+  ├─ src/skills/greeting_skill.py       ← 个性化打招呼语
+  ├─ src/skills/delivery_skill.py       ← 企微应用消息推送
+  └─ src/knowledge/job_store.py         ← SQLite去重+投递记录
 ```
 
-待实现：简历解析、JD 采集、匹配评分。
+### 4.2 核心链路
+
+```
+定时触发(cron/launchd 或手动)
+       │
+       ▼
+job_search_skill ──→ BOSS直聘/猎聘搜索 ──→ JD列表
+  (Playwright+反爬)    (按关键词"财务产品经理"等)
+       │
+       ▼
+硬性筛选: 地域=杭州 / 年限=5-10年 / 薪资=40-60K月或70W+年 / 关键词匹配
+       │
+       ▼
+match_skill ──→ 简历 × 每个JD ──→ 匹配分0-100 + 维度分解
+  (DeepSeek API)
+       │
+       ▼
+Top 3 排序 → 去重检查(SQLite job_url)
+       │
+       ├─→ resume_generator_skill ──→ 针对岗位定制简历
+       ├─→ greeting_skill        ──→ 个性化打招呼语
+       └─→ delivery_skill        ──→ 企微卡片消息推送
+                                        │
+                                  用户决定是否投递
+                                        │
+                                   job_store 记录留痕
+```
+
+### 4.3 搜索条件
+
+| 条件 | 值 |
+|------|-----|
+| 工作年限 | 5-10年 |
+| 薪资(月薪) | 40-60K |
+| 薪资(年薪) | 70W+ |
+| 地域 | 杭州 |
+| 岗位类型 | 产品经理 |
+| 关键词 | 财务产品经理、财税产品经理、ERP、财务共享、数据分析、风控、报表、业财一体、费控、企业服务 |
+
+### 4.4 反爬虫策略
+
+```
+Level 1: stealth.js 注入 (隐藏webdriver/navigator指纹)
+Level 2: 行为模拟 (随机延迟3-8s, 人类鼠标轨迹, 随机滚动)
+Level 3: Cookie/Session 持久化 (首次扫码登录, 保存storage_state)
+Level 4: 降级机制 (连续失败3次→通知用户→切换手动/晚9点模式)
+```
+
+### 4.5 推送格式
+
+企微卡片消息：标题含岗位+公司+匹配分 / 描述含薪资+地点+JD摘要+匹配点 / 点击跳BOSS原始链接
+
+### 4.6 去重
+
+SQLite `data/job_tracker.db`，以 `job_url` 为唯一键，同岗位不重复推送。
+
+### 4.7 实现阶段
+
+| 阶段 | 内容 | 预计 |
+|------|------|------|
+| Phase 1 | resume_skill + match_skill + 主控 | 1-2天 |
+| Phase 2 | job_search_skill (BOSS+反爬) | 2-3天 |
+| Phase 3 | resume_generator + greeting + delivery | 1-2天 |
+| Phase 4 | 定时调度 + 降级逻辑 | 半天 |
 
 ---
 

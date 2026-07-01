@@ -1097,10 +1097,10 @@ Phase 2（已完成 ✅）:
   ├── P2-1: SQLite 本地库 → 离线存储能力
   └── P2-2: Chroma 向量库 → RAG 检索
 
-Phase 3（当前，1-2周）:
-  └── P3-1: Career Agent → 简历解析 + 匹配
+Phase 3（当前 🚧）:
+  └── P3-1: Job Agent → 完整开发规格书 docs/JOB_AGENT_SPEC.md
 
-Phase 4（2-4周）:
+Phase 4（规划中）:
   ├── P3-2: Discovery Agent → 规则挖掘
   ├── Layer 5: Learning Layer → 用户行为采集
   └── Layer 6: Recommendation Layer → 智能推荐

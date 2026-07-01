@@ -1,0 +1,84 @@
+{
+  "personal": {
+    "name": "蔡梅莹",
+    "target_role": ["财务产品经理", "财税产品经理", "ERP产品经理", "财务共享产品经理"],
+    "years_of_experience": "5-10年",
+    "current_industry": "互联网/企业服务",
+    "target_location": "杭州",
+    "salary_expectation": {
+      "monthly": "40-60K",
+      "annual": "70W+"
+    }
+  },
+  "core_competencies": {
+    "domain_knowledge": [
+      "财务系统架构（ERP/EBS/FICO）",
+      "财务共享服务中心（FSSC）",
+      "费用控制与智能报销",
+      "全面预算管理",
+      "税务管理系统",
+      "应收应付管理",
+      "资金管理（TMS/银企直连）",
+      "管理报表与经营分析"
+    ],
+    "ai_expertise": [
+      "AI Agent 设计与落地（Knowledge Agent全链路）",
+      "LLM Prompt Engineering（DeepSeek/GPT/Claude）",
+      "智能审核引擎（OCR+规则+LLM混合方案）",
+      "RAG检索增强生成（Chroma+SQLite向量库）",
+      "AI产品全流程（从数据准备到模型调优到AB测试上线）",
+      "多模态大模型应用（文/图/语音）"
+    ],
+    "product_skills": [
+      "0-1产品设计与落地",
+      "中台架构设计（业务中台/数据中台）",
+      "PRD撰写与需求管理",
+      "竞品分析与行业调研",
+      "数据驱动决策（SQL/BI）",
+      "敏捷开发与项目管理"
+    ]
+  },
+  "work_experience": [
+    {
+      "company": "字节跳动",
+      "role": "财务产品经理",
+      "period": "",
+      "highlights": [
+        "负责财务支出系统（费用报销）产品设计与AI智能化改造",
+        "主导智能审核项目：OCR识别+LLM规则判断，免审率CN 82%/非中 60%，日均处理10W+单据",
+        "设计智能提单流程（Mira底层能力+自然语言输入→自动填单），覆盖打车/地铁/公交等场景",
+        "智能客服oncall拦截率65%+，月均15W笔，覆盖中区和非中",
+        "非标发票全LLM方案替代传统OCR+规则，多语言支持（英/韩/马来）",
+        "主导fonnex平台prompt训练集构建与调优，机审准确率99%+"
+      ]
+    },
+    {
+      "company": "网易",
+      "role": "财务产品经理",
+      "period": "",
+      "highlights": [
+        "负责对公支出系统的产品设计与优化",
+        "参与财务共享中心（FSSC）流程设计",
+        "AI智能审核方案探索：规则审核→prompt审核→AI自动生成审核规则→Agent多Skill协作"
+      ]
+    }
+  ],
+  "education": {
+    "degree": "本科",
+    "major": "财务/会计相关"
+  },
+  "languages": {
+    "chinese": "母语",
+    "english": "工作语言（邮件/文档/跨国会议）"
+  },
+  "job_search_preferences": {
+    "keywords": [
+      "财务产品经理", "财税产品经理", "ERP", "财务共享",
+      "数据分析", "风控", "报表", "业财一体", "费控",
+      "智能审核", "AI产品经理", "企业服务", "B端产品经理"
+    ],
+    "excluded_keywords": ["实习", "应届", "外包"],
+    "company_size": ["上市公司", "独角兽", "B轮以上"],
+    "location": "杭州"
+  }
+}

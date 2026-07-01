@@ -1,0 +1,41 @@
+# Job Agent — 岗位筛选条件
+# 修改此文件即可调整搜索参数，无需改代码
+
+filters:
+  location: "杭州"
+  work_years: [5, 10]           # 工作年限区间
+  salary_monthly: [40000, 60000] # 月薪区间
+  salary_annual_min: 700000      # 年薪最低
+
+search:
+  platforms: ["boss", "liepin"]
+  max_results_per_platform: 20
+  daily_push_limit: 3
+
+  keywords:
+    - "财务产品经理"
+    - "财税产品经理"
+    - "ERP产品经理"
+    - "财务共享产品经理"
+    - "业财产品经理"
+    - "费控产品经理"
+    - "企业服务产品经理"
+
+  exclude_keywords:
+    - "实习"
+    - "应届"
+    - "外包"
+    - "兼职"
+
+anti_crawl:
+  min_delay: 3
+  max_delay: 8
+  max_retries: 3
+  session_file: "data/boss_session.json"
+  fallback_mode: "manual"
+  fallback_hour: 21
+
+delivery:
+  primary: "wecom"
+  fallback: "local_file"
+  output_dir: "data/job_output"

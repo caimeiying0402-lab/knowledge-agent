@@ -10,7 +10,7 @@
 | Agent | 完成度 | 状态 |
 |-------|--------|------|
 | Knowledge Agent | ~95% | 🟢 全链路完成 |
-| Job Agent | 0% | ⬜ 下一阶段 |
+| Job Agent | 5% | 🚧 开发规格书已完成，待实现 |
 | 自动记账 Agent | 0% | ⬜ 未启动 |
 | Rule Mining Agent | 0% | ⬜ 未启动 |
 
@@ -50,10 +50,26 @@
 
 ---
 
-## 三、下一阶段
+## 三、当前阶段
+
+| 优先级 | 任务 | 状态 |
+|--------|------|------|
+| P3-1 | Job Agent 开发 | 🚧 规格书已出 (docs/JOB_AGENT_SPEC.md) |
+| P2 | Embedding 修复 | ⏸️ 暂缓 |
+
+### Job Agent 进度
+
+| 模块 | 状态 |
+|------|------|
+| `resume_profile.json` | ✅ 已生成，待人类review |
+| `docs/JOB_AGENT_SPEC.md` | ✅ 完整开发规格书 |
+| Phase 1: resume + match | ⬜ 待实现 |
+| Phase 2: job search + 反爬 | ⬜ 待实现 |
+| Phase 3: resume gen + greeting + delivery | ⬜ 待实现 |
+| Phase 4: 定时调度 | ⬜ 待实现 |
+
+## 四、后续
 
 | 优先级 | 任务 |
 |--------|------|
-| P3-1 | Career Agent: 简历解析 + 岗位匹配 |
-| P2 | Embedding 修复（阿里云百炼 401 → 本地 BGE） |
 | P3-2 | Discovery Agent: 规则挖掘 |

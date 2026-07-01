@@ -74,6 +74,16 @@ PYTHONPATH=src python src/skills/cloud_sync_skill.py  # 同步积压消息
 
 ---
 
-## 五、当前任务
+## 五、当前任务：Job Agent 🚧
 
-详见 `NEXT_STEPS.md` Phase 3: P3-1 Career Agent。
+详见 **`docs/JOB_AGENT_SPEC.md`** — 完整开发规格书（13页）。
+
+**核心链路：** 简历解析 → BOSS/猎聘搜索 → 匹配评分 → Top3 → 个性化简历+打招呼语 → 企微推送
+
+**实现顺序：**
+1. Phase 1: `resume_skill.py` + `match_skill.py` + `career_agent.py`
+2. Phase 2: `job_search_skill.py` + 反爬虫（核心难点）
+3. Phase 3: `resume_generator` + `greeting` + `delivery`
+4. Phase 4: launchd 定时调度
+
+**简历数据：** `src/agents/resume_profile.json`（待人类review）
