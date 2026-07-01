@@ -36,6 +36,13 @@ gh
 # ── GitHub CLI 临时数据 ──
 .gh_state/
 
+# ── Cloudflare Worker cache ──
+.wrangler/
+
+# ── 运行时数据库（不在 git 中管理）──
+data/knowledge.db
+data/chroma_db/
+
 # ── macOS ──
 .DS_Store
 **/.DS_Store
