@@ -15,7 +15,7 @@ Personal AI OS = 多 Agent 协作系统。当前阶段：Knowledge Agent 主线�
 |-------|------|------|
 | Knowledge Agent | 多端采集 → AI 处理 → 结构化知识库 → 可检索 | 🟢 主线已完工 |
 | Job Agent | 简历 × JD 匹配 | ⬜ 下一阶段 |
-| 自动记账 Agent | 账单 → 随手记 | ⬜ 未启动 |
+| 自动记账 Agent | ~~账单 → 随手记~~ | ❌ 已取消/延期 |
 | Rule Mining Agent | 规则挖掘 + 推荐 | ⬜ 未启动 |
 
 ---

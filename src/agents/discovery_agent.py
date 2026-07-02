@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""
+Discovery Agent — 知识发现与推荐主编排器
+
+流程: 兴趣画像 → 搜索词生成 → 全网搜索 → AI评分 → 去重 → 推送
+
+用法:
+  python src/agents/discovery_agent.py --run              # 执行一次发现
+  python src/agents/discovery_agent.py --dry-run          # 只看不存
+  python src/agents/discovery_agent.py --daemon           # 持续运行
+  python src/agents/discovery_agent.py --stats            # 查看推荐统计
+"""
+import argparse
+import json
+import logging
+import signal
+import sys
+import time
+from pathlib import Path
+
+# 确保 src 在 PYTHONPATH 中
+_BASE_DIR = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_BASE_DIR / "src"))
+
+from models.deepseek_client import chat
+from skills.interest_profile_skill import extract_profile
+from skills.web_search_skill import search_web, enrich_results
+from skills.recommendation_skill import score_results, deduplicate
+from skills.delivery_skill import (
+    notify_desktop,
+    save_recommendations,
+    print_recommendations,
+    format_recommendation_message,
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("discovery_agent")
+
+# 全局开关，用于优雅退出
+_running = True
+
+
+def _signal_handler(signum, frame):
+    global _running
+    logger.info("收到退出信号，正在停止...")
+    _running = False
+
+
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
+
+
+def _generate_search_queries(profile: dict) -> list[str]:
+    """基于兴趣画像，用 DeepSeek 生成搜索词"""
+    prompt_path = _BASE_DIR / "prompts" / "search_query_prompt.txt"
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        system_prompt = f.read()
+
+    user_message = json.dumps(profile, ensure_ascii=False, indent=2)
+
+    try:
+        response = chat(system_prompt, user_message)
+        cleaned = response.strip().strip("```json").strip("```").strip()
+        result = json.loads(cleaned)
+        queries = [q["query"] for q in result.get("queries", [])]
+        logger.info(f"生成 {len(queries)} 个搜索词")
+        for q in queries:
+            logger.info(f"  → {q}")
+        return queries
+    except Exception as e:
+        logger.warning(f"搜索词生成失败: {e}")
+        # 降级：直接用兴趣分类名作为搜索词
+        fallback = []
+        for interest in profile.get("top_interests", [])[:3]:
+            cat = interest.get("category", "")
+            if cat:
+                fallback.append(f"{cat} 最新资讯 2026")
+        logger.info(f"降级搜索词: {fallback}")
+        return fallback
+
+
+def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False) -> dict:
+    """执行一次完整的发现周期"""
+    start = time.time()
+    logger.info("=" * 50)
+    logger.info("开始知识发现周期")
+
+    # 1. 提取兴趣画像
+    logger.info("[1/6] 分析知识库兴趣画像...")
+    profile = extract_profile()
+    logger.info(f"  主要兴趣: {[i['category'] for i in profile.get('top_interests', [])]}")
+    logger.info(f"  偏好分类: {profile.get('preferred_categories', [])}")
+    logger.info(f"  知识盲区: {profile.get('knowledge_gaps', [])}")
+
+    # 2. 生成搜索词
+    logger.info("[2/6] 生成搜索词...")
+    queries = _generate_search_queries(profile)
+
+    # 3. 全网搜索
+    logger.info(f"[3/6] 全网搜索（{len(queries)} 个查询）...")
+    search_results = search_web(queries, max_results_per_query=5)
+
+    if not search_results:
+        logger.info("无搜索结果，周期结束")
+        return {"discovered": 0, "queries": queries}
+
+    logger.info(f"  获取 {len(search_results)} 条去重搜索结果")
+
+    # 可选：抓取页面内容
+    if fetch_content:
+        logger.info("  抓取页面内容...")
+        search_results = enrich_results(search_results, fetch_content=True)
+
+    # 4. AI 评分
+    logger.info(f"[4/6] AI 相关性评分...")
+    scored = score_results(profile, search_results)
+    logger.info(f"  评分≥60: {len(scored)} 条")
+
+    if not scored:
+        logger.info("无相关内容，周期结束")
+        return {"discovered": 0, "queries": queries}
+
+    # 5. 去重
+    logger.info("[5/6] 去重检查...")
+    new_items = deduplicate(scored)
+    logger.info(f"  新内容: {len(new_items)} 条")
+
+    # 6. 推送
+    logger.info("[6/6] 推送...")
+    if not dry_run and new_items:
+        saved = save_recommendations(new_items, search_results, profile)
+        msg = format_recommendation_message(new_items)
+        notify_desktop("Knowledge Agent 发现新内容", msg)
+        logger.info(f"  已保存: {saved} 条")
+    elif dry_run:
+        logger.info("  [DRY RUN] 跳过保存和通知")
+
+    # 终端输出
+    print_recommendations(new_items)
+
+    elapsed = time.time() - start
+    logger.info(f"周期完成，耗时 {elapsed:.1f}s，发现 {len(new_items)} 条新推荐")
+
+    return {
+        "discovered": len(new_items),
+        "queries": queries,
+        "profile": profile,
+        "elapsed": round(elapsed, 1),
+    }
+
+
+def _show_stats():
+    """显示推荐历史统计"""
+    from knowledge.sqlite_store import get_recommendation_stats, get_recommendations
+
+    stats = get_recommendation_stats()
+    print(f"\n推荐系统统计:")
+    print(f"  总推荐数: {stats['total']}")
+    print(f"  已推送: {stats['delivered']}")
+    print(f"  平均评分: {stats['avg_score']}")
+    if stats.get("by_interest"):
+        print(f"  按兴趣分布:")
+        for cat, cnt in stats["by_interest"].items():
+            print(f"    - {cat}: {cnt}")
+
+    recent = get_recommendations(limit=10)
+    if recent:
+        print(f"\n最近10条推荐:")
+        for r in recent:
+            print(f"  [{r['score']}分] {r['title'][:70]}")
+            print(f"    {r['url'][:100]}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Discovery Agent — 知识发现与推荐引擎",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python src/agents/discovery_agent.py --run
+  python src/agents/discovery_agent.py --dry-run
+  python src/agents/discovery_agent.py --daemon --interval 3600
+  python src/agents/discovery_agent.py --stats
+        """,
+    )
+    parser.add_argument("--run", action="store_true", help="执行一次发现周期")
+    parser.add_argument("--dry-run", action="store_true", help="试运行（不保存、不通知）")
+    parser.add_argument("--daemon", action="store_true", help="持续运行模式")
+    parser.add_argument("--interval", type=int, default=3600, help="守护模式间隔（秒），默认3600")
+    parser.add_argument("--fetch-content", action="store_true", help="抓取搜索结果页面全文")
+    parser.add_argument("--stats", action="store_true", help="查看推荐历史统计")
+
+    args = parser.parse_args()
+
+    # 默认行为：无参数时等同 --run
+    if not any([args.run, args.dry_run, args.daemon, args.stats]):
+        args.run = True
+
+    if args.stats:
+        _show_stats()
+        return
+
+    if args.dry_run:
+        logger.info("DRY RUN 模式 — 不会保存或推送")
+        _run_discovery_cycle(dry_run=True, fetch_content=args.fetch_content)
+        return
+
+    if args.run:
+        _run_discovery_cycle(dry_run=False, fetch_content=args.fetch_content)
+        return
+
+    if args.daemon:
+        logger.info(f"守护模式启动，间隔 {args.interval}s")
+        while _running:
+            try:
+                _run_discovery_cycle(dry_run=False, fetch_content=args.fetch_content)
+            except Exception as e:
+                logger.error(f"发现周期异常: {e}", exc_info=True)
+            if _running:
+                logger.info(f"等待 {args.interval}s 后下一轮...")
+                for _ in range(args.interval):
+                    if not _running:
+                        break
+                    time.sleep(1)
+        logger.info("守护模式已退出")
+
+
+if __name__ == "__main__":
+    main()

@@ -39,6 +39,25 @@ CREATE INDEX IF NOT EXISTS idx_category ON knowledge_items(category);
 CREATE INDEX IF NOT EXISTS idx_created_at ON knowledge_items(created_at);
 CREATE INDEX IF NOT EXISTS idx_source_type ON knowledge_items(source_type);
 CREATE INDEX IF NOT EXISTS idx_embedding_status ON knowledge_items(embedding_status);
+
+CREATE TABLE IF NOT EXISTS recommendations (
+    id TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    title TEXT,
+    snippet TEXT,
+    score INTEGER DEFAULT 0,
+    reason TEXT,
+    category_match TEXT,
+    interest_category TEXT,
+    source_query TEXT,
+    full_content TEXT,
+    recommended_at INTEGER NOT NULL,
+    delivered INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_rec_score ON recommendations(score DESC);
+CREATE INDEX IF NOT EXISTS idx_rec_at ON recommendations(recommended_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rec_delivered ON recommendations(delivered);
 """
 
 
@@ -224,6 +243,103 @@ def delete_item(record_id: str) -> bool:
         return True
     except Exception as e:
         logger.warning(f"SQLite 删除失败: {e}")
+        return False
+
+
+# ── 内部工具 ──
+
+# ── 推荐记录 ──
+
+def insert_recommendation(rec: dict) -> bool:
+    """插入一条推荐记录，url+recommended_at 组合去重"""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT OR IGNORE INTO recommendations
+               (id, url, title, snippet, score, reason, category_match,
+                interest_category, source_query, full_content, recommended_at, delivered)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                rec.get("id", ""),
+                rec.get("url", ""),
+                rec.get("title", ""),
+                rec.get("snippet", ""),
+                rec.get("score", 0),
+                rec.get("reason", ""),
+                rec.get("category_match", ""),
+                rec.get("interest_category", ""),
+                rec.get("source_query", ""),
+                rec.get("full_content", ""),
+                rec.get("recommended_at", 0),
+                1 if rec.get("delivered") else 0,
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"推荐写入失败: {e}")
+        return False
+
+
+def get_recommendations(limit: int = 20, delivered_only: bool = False) -> list[dict]:
+    """获取推荐记录，按评分降序"""
+    conn = _get_conn()
+    if delivered_only:
+        rows = conn.execute(
+            "SELECT * FROM recommendations WHERE delivered=1 ORDER BY score DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM recommendations ORDER BY score DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recommendation_stats() -> dict:
+    """推荐统计"""
+    conn = _get_conn()
+    total = conn.execute("SELECT COUNT(*) FROM recommendations").fetchone()[0]
+    delivered = conn.execute(
+        "SELECT COUNT(*) FROM recommendations WHERE delivered=1"
+    ).fetchone()[0]
+    avg_score = conn.execute(
+        "SELECT AVG(score) FROM recommendations"
+    ).fetchone()[0] or 0
+    by_interest = conn.execute(
+        "SELECT interest_category, COUNT(*) as cnt FROM recommendations GROUP BY interest_category ORDER BY cnt DESC"
+    ).fetchall()
+    return {
+        "total": total,
+        "delivered": delivered,
+        "avg_score": round(avg_score, 1),
+        "by_interest": {r["interest_category"]: r["cnt"] for r in by_interest},
+    }
+
+
+def is_url_already_known(url: str) -> bool:
+    """检查 URL 是否已在知识库或推荐记录中存在"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT id FROM knowledge_items WHERE source_path=? UNION ALL SELECT id FROM recommendations WHERE url=? LIMIT 1",
+        (url, url),
+    ).fetchone()
+    return row is not None
+
+
+def mark_recommendation_delivered(rec_id: str) -> bool:
+    """标记推荐已推送"""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE recommendations SET delivered=1 WHERE id=?",
+            (rec_id,),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"更新推荐状态失败: {e}")
         return False
 
 
