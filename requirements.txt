@@ -7,3 +7,5 @@ chromadb
 gunicorn
 pycryptodome
 pyyaml
+duckduckgo-search>=7.0.0
+flask

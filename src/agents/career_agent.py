@@ -187,7 +187,7 @@ def main():
     parser.add_argument("--schedule", action="store_true", help="定时模式 (Phase 4)")
     parser.add_argument("--search-only", action="store_true", help="仅搜索+匹配")
     parser.add_argument("--engine", type=str, default=None,
-                        choices=["manual", "playwright"],
+                        choices=["manual", "playwright", "scraping"],
                         help="搜索引擎 (默认 manual)")
     parser.add_argument("--max-results", type=int, default=20)
     parser.add_argument("--stats", action="store_true", help="查看历史投递记录")

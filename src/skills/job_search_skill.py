@@ -212,25 +212,66 @@ class PlaywrightEngine(BaseEngine):
                 break
 
         launch_args = {
-            "headless": False,  # 非无头，用户能看到浏览器
+            "headless": False,  # 非无头
             "args": [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-blink-features=AutomationControlled",
+                "--disable-automation",
+                "--disable-dev-shm-usage",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-site-isolation-trials",
+                "--disable-web-security",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-notifications",
+                "--disable-popup-blocking",
+                "--disable-sync",
+                "--disable-background-networking",
+                "--disable-component-update",
+                "--disable-client-side-phishing-detection",
             ],
         }
         if chrome_path:
-            launch_args["channel"] = Path(chrome_path).stem.lower()
+            path_lower = chrome_path.lower()
+            if "google chrome" in path_lower:
+                launch_args["channel"] = "chrome"
+            elif "microsoft edge" in path_lower:
+                launch_args["channel"] = "msedge"
+            elif "brave" in path_lower:
+                launch_args["channel"] = "chrome"  # Brave uses Chromium
 
         self._browser = self._playwright.chromium.launch(**launch_args)
         logger.info(f"Playwright 浏览器已启动 (headless=False)")
+
+        # 注入反检测脚本
+        stealth_js = """
+        // 隐藏 webdriver 属性
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        // 覆盖 chrome.runtime
+        window.chrome = { runtime: {} };
+        // 伪造 plugins
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        // 伪造语言
+        Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+        // 覆盖权限查询
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+        );
+        """
 
         # 加载已保存的 session
         self._context = self._browser.new_context(
             viewport={"width": 1440, "height": 900},
             locale="zh-CN",
             timezone_id="Asia/Shanghai",
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
+        self._context.add_init_script(stealth_js)
         if self._session_file.exists():
             try:
                 self._context = self._browser.new_context(
@@ -238,7 +279,9 @@ class PlaywrightEngine(BaseEngine):
                     viewport={"width": 1440, "height": 900},
                     locale="zh-CN",
                     timezone_id="Asia/Shanghai",
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 )
+                self._context.add_init_script(stealth_js)
                 logger.info(f"已加载保存的 session: {self._session_file}")
             except Exception as e:
                 logger.warning(f"Session 加载失败，将重新登录: {e}")
@@ -246,7 +289,9 @@ class PlaywrightEngine(BaseEngine):
                     viewport={"width": 1440, "height": 900},
                     locale="zh-CN",
                     timezone_id="Asia/Shanghai",
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 )
+                self._context.add_init_script(stealth_js)
 
     def _ensure_logged_in(self, page) -> bool:
         """检查登录态，如果未登录则引导用户手动扫码"""
@@ -450,11 +495,416 @@ class PlaywrightEngine(BaseEngine):
         logger.info("Playwright 浏览器已关闭")
 
 
+
+# ── ScrapingApiEngine ──
+
+class ScrapingApiEngine(BaseEngine):
+    """第三方网页渲染 API 引擎 — 使用外部服务绕过反爬
+    支持 ScrapingFish / ScrapingBee 等兼容服务
+    API 设计: GET ?api_key=KEY&url=TARGET&render=true → 返回 HTML
+    """
+    name = "scraping"
+
+    def __init__(self, api_key: str = "", base_url: str = "https://api.scrapingfish.com/api/v1/"):
+        import os
+        from dotenv import load_dotenv
+        env_path = BASE_DIR / "config" / ".env"
+        load_dotenv(env_path)
+        self._api_key = api_key or os.getenv("SCRAPING_API_KEY", "")
+        self._base_url = base_url.rstrip("/")
+        self._config = load_filters()
+        ac = self._config.get("anti_crawl", {})
+        self._min_delay = ac.get("min_delay", 3)
+        self._max_delay = ac.get("max_delay", 8)
+
+    def _fetch(self, url: str) -> str:
+        """通过外部 API 获取渲染后的 HTML"""
+        import urllib.parse, urllib.request
+
+        params = urllib.parse.urlencode({
+            "api_key": self._api_key,
+            "url": url,
+            "render_js": "true",
+            "total_timeout_ms": "120000",
+        })
+        full_url = f"{self._base_url}?{params}"
+        logger.info(f"  Fetching via ScrapingFish: {url[:80]}...")
+        try:
+            req = urllib.request.Request(full_url)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read().decode("utf-8")
+        except Exception as e:
+            logger.error(f"ScrapingFish API 请求失败: {e}")
+            return ""
+
+    def _parse_search_results(self, html: str) -> list[JobListing]:
+        """解析 BOSS直聘搜索结果 HTML 为 JobListing 列表"""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        listings = []
+
+        # BOSS 搜索结果卡片选择器（多个版本兼容）
+        cards = soup.select(".job-list-item, .job-card-wrapper, [class*='job-card'], .job-primary")
+        for card in cards:
+            try:
+                title_el = card.select_one(".job-name, .job-title, [class*=\'title\']")
+                company_el = card.select_one(".company-name, .company-text, [class*=\'company-name\'], .info-company")
+                salary_el = card.select_one(".salary, .red, [class*=\'salary\']")
+                location_el = card.select_one(".job-area, .city, [class*=\'location\']")
+                link_el = card.select_one("a[href*=\'job_detail\']")
+
+                title = title_el.get_text(strip=True) if title_el else ""
+                company = company_el.get_text(strip=True) if company_el else ""
+                salary = salary_el.get_text(strip=True) if salary_el else ""
+                location = location_el.get_text(strip=True) if location_el else ""
+                url = ""
+                if link_el:
+                    href = link_el.get("href", "")
+                    if href.startswith("/"):
+                        url = f"https://www.zhipin.com{href}"
+                    elif href.startswith("http"):
+                        url = href
+
+                if title and company:
+                    listings.append(JobListing(
+                        title=title, company=company, salary=salary,
+                        location=location, url=url,
+                    ))
+            except Exception as e:
+                logger.debug(f"解析条目失败: {e}")
+        return listings
+
+    def _parse_jd_detail(self, html: str, url: str) -> Optional[JobDetail]:
+        """解析 BOSS直聘 JD 详情页 HTML"""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+
+        # JD 正文
+        jd_selectors = [".job-sec-text", ".job-detail", ".detail-content",
+                        ".text", "main", ".job-boss-desc", ".job-description"]
+        jd_text = ""
+        for sel in jd_selectors:
+            el = soup.select_one(sel)
+            if el:
+                jd_text = el.get_text(strip=True)
+                if len(jd_text) > 100:
+                    break
+
+        if not jd_text:
+            jd_text = soup.get_text()[:3000]
+
+        # 提取其他字段
+        title = soup.title.string.strip() if soup.title else ""
+
+        # 薪资/年限/学历 - 从各种可能的选择器中提取
+        info_items = soup.select(".job-banner .info-item, .job-detail-header .info-item, [class*=\'tag\']")
+        salary = ""
+        experience = ""
+        education = ""
+        for item in info_items:
+            text = item.get_text(strip=True)
+            if "K" in text or "k" in text or "K" in text or "薪" in text:
+                salary = text
+            elif "年" in text or "经验" in text:
+                experience = text
+            elif "本科" in text or "硕士" in text or "博士" in text or "学历" in text:
+                education = text
+
+        if not jd_text:
+            return None
+
+        return JobDetail(
+            title=title,
+            company="",
+            jd_text=jd_text,
+            salary=salary,
+            url=url,
+            experience_years=experience,
+            education=education,
+        )
+
+    def search(self, keywords: list[str], filters: dict) -> list[JobListing]:
+        if not self._api_key:
+            raise ValueError("未设置 API Key。请从 https://scrapingfish.com 注册获取，"
+                             "然后设置环境变量 SCRAPING_API_KEY 或在 .env 中配置")
+
+        all_listings = []
+        for kw in keywords:
+            search_url = f"https://www.zhipin.com/web/geek/job?city=杭州&query={kw}"
+            logger.info(f"搜索关键词: {kw}")
+            html = self._fetch(search_url)
+            if html:
+                listings = self._parse_search_results(html)
+                logger.info(f"  解析到 {len(listings)} 个岗位")
+                all_listings.extend(listings)
+            self._sleep_between()
+
+            if len(all_listings) >= 60:
+                break
+
+        # 去重（按 URL）
+        seen_urls = set()
+        unique_listings = []
+        for l in all_listings:
+            key = l.url or l.title + l.company
+            if key not in seen_urls:
+                seen_urls.add(key)
+                unique_listings.append(l)
+
+        logger.info(f"去重后共 {len(unique_listings)} 个岗位")
+        return unique_listings
+
+    def get_detail(self, url: str) -> Optional[JobDetail]:
+        if not url:
+            return None
+        html = self._fetch(url)
+        if not html:
+            return None
+        detail = self._parse_jd_detail(html, url)
+        return detail
+
+    def _sleep_between(self):
+        import time, random
+        delay = random.uniform(self._min_delay, self._max_delay)
+        time.sleep(delay)
+
+# ── CDPEngine：连接真实 Chrome（终极反反爬方案）──
+
+class CDPEngine(BaseEngine):
+    """CDP (Chrome DevTools Protocol) 引擎 — 连接到用户正在使用的真实 Chrome。
+
+    原理：网站无法区分 CDP 连接和真实用户操作，因为本来就是同一个浏览器。
+    用户只需启动 Chrome 时加 --remote-debugging-port=9222，然后正常登录 BOSS。
+
+    用法：
+      1. 终端执行（macOS）:
+         /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\
+           --remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile"
+      2. 在打开的 Chrome 中登录 zhipin.com
+      3. python -c "from skills.job_search_skill import CDPEngine; ..."
+    """
+    name = "cdp"
+
+    def __init__(self, cdp_url: str = "http://localhost:9222"):
+        self._playwright = None
+        self._browser = None
+        self._cdp_url = cdp_url
+        self._config = load_filters()
+        ac = self._config.get("anti_crawl", {})
+        self._min_delay = ac.get("min_delay", 2)
+        self._max_delay = ac.get("max_delay", 5)
+        self._max_retries = ac.get("max_retries", 3)
+        self._block_count = 0
+
+    def _ensure_browser(self):
+        if self._browser is not None:
+            return
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            raise RuntimeError("Playwright 未安装")
+
+        self._playwright = sync_playwright().start()
+        try:
+            self._browser = self._playwright.chromium.connect_over_cdp(self._cdp_url)
+            logger.info(f"CDP 已连接到 Chrome: {self._cdp_url}")
+            contexts = self._browser.contexts
+            logger.info(f"  发现 {len(contexts)} 个浏览器上下文, "
+                        f"共 {sum(len(ctx.pages) for ctx in contexts)} 个标签页")
+        except Exception as e:
+            self._playwright.stop()
+            raise RuntimeError(
+                f"无法连接到 Chrome CDP ({self._cdp_url})。请确保 Chrome 已启动:\n"
+                f"  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\\n"
+                f"    --remote-debugging-port=9222 --user-data-dir=\"$HOME/chrome-debug-profile\"\n"
+                f"原始错误: {e}"
+            )
+
+    def _get_or_create_page(self):
+        """在现有浏览器上下文中找到 BOSS 页面或创建新页面"""
+        self._ensure_browser()
+        contexts = self._browser.contexts
+        if not contexts:
+            ctx = self._browser.new_context()
+        else:
+            ctx = contexts[0]  # 使用默认上下文（含用户登录态）
+
+        # 尝试找到已有的 BOSS 页面
+        for page in ctx.pages:
+            if "zhipin.com" in page.url:
+                logger.info(f"复用已有 BOSS 页面: {page.url[:80]}")
+                return page
+
+        page = ctx.new_page()
+        return page
+
+    def _detect_block(self, page) -> bool:
+        try:
+            body_text = page.inner_text("body").lower()
+            signals = ["验证码", "captcha", "access denied", "请稍后再试",
+                       "操作频繁", "人机验证", "verify", "滑块验证"]
+            for s in signals:
+                if s in body_text:
+                    self._block_count += 1
+                    logger.warning(f"检测到拦截信号({self._block_count}/{self._max_retries}): {s}")
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _sleep(self):
+        delay = random.uniform(self._min_delay, self._max_delay)
+        time.sleep(delay)
+
+    def _human_scroll(self, page):
+        """模拟人类滚动行为"""
+        try:
+            for _ in range(random.randint(1, 3)):
+                scroll = random.randint(200, 600)
+                page.evaluate(f"window.scrollBy(0, {scroll})")
+                time.sleep(random.uniform(0.3, 0.8))
+        except Exception:
+            pass
+
+    def search(self, keywords: list[str], filters: dict) -> list[JobListing]:
+        page = self._get_or_create_page()
+        all_listings = []
+
+        # 确保已登录
+        page.goto("https://www.zhipin.com/web/geek/job", wait_until="domcontentloaded", timeout=15000)
+        page.wait_for_timeout(2000)
+        if "login" in page.url.lower():
+            print("\n" + "=" * 60)
+            print("  ⚠️  BOSS直聘未登录")
+            print("  请在 Chrome 浏览器中手动登录 zhipin.com")
+            print("  登录成功后按回车继续...")
+            print("=" * 60)
+            input()
+            page.goto("https://www.zhipin.com/web/geek/job", wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(2000)
+
+        try:
+            for kw in keywords:
+                if self._block_count >= self._max_retries:
+                    logger.error(f"拦截次数过多，暂停搜索。休息 5 分钟后重试。")
+                    break
+
+                search_url = f"https://www.zhipin.com/web/geek/job?city=杭州&query={kw}"
+                logger.info(f"搜索: {kw}")
+                page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(random.uniform(1500, 3000))
+
+                if self._detect_block(page):
+                    self._sleep()
+                    continue
+
+                self._human_scroll(page)
+
+                # 提取岗位列表（使用更广的选择器匹配）
+                try:
+                    page.wait_for_selector("[class*='job']", timeout=6000)
+                except Exception:
+                    pass
+
+                # CDP 模式下用 JS 提取更可靠
+                try:
+                    items = page.evaluate("""() => {
+                        const cards = document.querySelectorAll(
+                            '.job-card-wrap, .job-card-wrapper, [class*="job-card"], .job-list-item, .job-primary, li[class*="job"]'
+                        );
+                        return Array.from(cards).slice(0, 20).map(card => {
+                            const titleEl = card.querySelector('.job-name, .job-title, [class*="title"], a[href*="job_detail"]');
+                            const companyEl = card.querySelector('.company-name, .company-text, [class*="company"], .name');
+                            const salaryEl = card.querySelector('.salary, .red, [class*="salary"]');
+                            const locationEl = card.querySelector('.job-area, .city, [class*="location"]');
+                            const linkEl = card.querySelector('a[href*="job_detail"], a[ka*="job"]');
+                            return {
+                                title: titleEl ? titleEl.innerText.trim() : '',
+                                company: companyEl ? companyEl.innerText.trim() : '',
+                                salary: salaryEl ? salaryEl.innerText.trim() : '',
+                                location: locationEl ? locationEl.innerText.trim() : '',
+                                url: linkEl ? linkEl.href : ''
+                            };
+                        }).filter(item => item.title && item.company);
+                    }""")
+                    for item in items:
+                        all_listings.append(JobListing(
+                            title=item["title"], company=item["company"],
+                            salary=item.get("salary"), location=item.get("location"),
+                            url=item.get("url"),
+                        ))
+                    logger.info(f"  {kw}: {len(items)} 个岗位")
+                except Exception as e:
+                    logger.warning(f"JS 提取失败 ({kw}): {e}")
+
+                self._sleep()
+                if len(all_listings) >= 60:
+                    break
+
+        finally:
+            pass  # 不关闭 page，保持浏览器打开
+
+        logger.info(f"CDP搜索完成: {len(all_listings)} 个岗位")
+        return all_listings
+
+    def get_detail(self, url: str) -> Optional[JobDetail]:
+        if not url:
+            return None
+        page = self._get_or_create_page()
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(random.uniform(1000, 2000))
+
+            if self._detect_block(page):
+                return None
+
+            self._human_scroll(page)
+
+            # JS 提取 JD 文本
+            jd_text = page.evaluate("""() => {
+                const selectors = ['.job-sec-text', '.job-detail', '.detail-content',
+                                   '.text', '.job-boss-desc', '.job-description',
+                                   '[class*="description"]', '[class*="detail"]'];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.innerText.length > 100) return el.innerText.trim();
+                }
+                return document.body ? document.body.innerText.substring(0, 3000) : '';
+            }""")
+
+            return JobDetail(
+                title=page.title(),
+                company="",
+                jd_text=jd_text,
+                url=url,
+            )
+        finally:
+            pass  # 不关闭 page
+
+    def stop(self):
+        """断开 CDP（不关闭浏览器，因为那是用户的浏览器）"""
+        if self._browser:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+        if self._playwright:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+        self._browser = None
+        self._playwright = None
+        logger.info("CDP 已断开")
+
+
 # ── 工厂 ──
 
 _ENGINES = {
     "manual": ManualEngine,
     "playwright": PlaywrightEngine,
+    "scraping": ScrapingApiEngine,
+    "cdp": CDPEngine,
 }
 
 
@@ -487,7 +937,7 @@ def search_jobs(keywords: Optional[list[str]] = None,
         details = details[:max_results]
         return details
     finally:
-        if isinstance(eng, PlaywrightEngine):
+        if isinstance(eng, (PlaywrightEngine, CDPEngine)):
             eng.stop()
 
 
@@ -520,5 +970,5 @@ def get_job_detail(url: str, engine: str = "manual") -> Optional[JobDetail]:
     try:
         return eng.get_detail(url)
     finally:
-        if isinstance(eng, PlaywrightEngine):
+        if isinstance(eng, (PlaywrightEngine, CDPEngine)):
             eng.stop()
