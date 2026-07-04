@@ -58,6 +58,46 @@ CREATE TABLE IF NOT EXISTS recommendations (
 CREATE INDEX IF NOT EXISTS idx_rec_score ON recommendations(score DESC);
 CREATE INDEX IF NOT EXISTS idx_rec_at ON recommendations(recommended_at DESC);
 CREATE INDEX IF NOT EXISTS idx_rec_delivered ON recommendations(delivered);
+
+CREATE TABLE IF NOT EXISTS user_interactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL,
+    interaction_type TEXT NOT NULL,
+    recommended_score REAL,
+    recommended_batch_id TEXT,
+    context TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (item_id) REFERENCES knowledge_items(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_interactions_item ON user_interactions(item_id);
+CREATE INDEX IF NOT EXISTS idx_interactions_type ON user_interactions(interaction_type);
+CREATE INDEX IF NOT EXISTS idx_interactions_created ON user_interactions(created_at);
+
+CREATE TABLE IF NOT EXISTS internal_recommendations (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    score REAL NOT NULL,
+    score_breakdown TEXT,
+    reason TEXT,
+    triggered_by TEXT,
+    batch_id TEXT,
+    gap_signals TEXT,
+    delivered INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (item_id) REFERENCES knowledge_items(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_internal_rec_item ON internal_recommendations(item_id);
+CREATE INDEX IF NOT EXISTS idx_internal_rec_batch ON internal_recommendations(batch_id);
+CREATE INDEX IF NOT EXISTS idx_internal_rec_created ON internal_recommendations(created_at);
+
+CREATE TABLE IF NOT EXISTS career_goals_cache (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    goals_json TEXT NOT NULL,
+    extracted_at INTEGER NOT NULL,
+    source_hash TEXT NOT NULL
+);
 """
 
 
@@ -344,6 +384,221 @@ def mark_recommendation_delivered(rec_id: str) -> bool:
 
 
 # ── 内部工具 ──
+
+# ── 用户互动记录 ──
+
+def insert_interaction(interaction: dict) -> bool:
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO user_interactions
+               (item_id, interaction_type, recommended_score,
+                recommended_batch_id, context, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                interaction.get("item_id", ""),
+                interaction.get("interaction_type", ""),
+                interaction.get("recommended_score"),
+                interaction.get("recommended_batch_id"),
+                interaction.get("context"),
+                interaction.get("created_at", 0),
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"互动记录写入失败: {e}")
+        return False
+
+
+def get_interactions(item_id: str = None, interaction_type: str = None,
+                     limit: int = 50) -> list[dict]:
+    conn = _get_conn()
+    conditions = []
+    params = []
+    if item_id:
+        conditions.append("item_id=?")
+        params.append(item_id)
+    if interaction_type:
+        conditions.append("interaction_type=?")
+        params.append(interaction_type)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    rows = conn.execute(
+        f"SELECT * FROM user_interactions {where} ORDER BY created_at DESC LIMIT ?",
+        params + [limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_interaction_stats(days: int = 30) -> dict:
+    conn = _get_conn()
+    cutoff = int(__import__("time").time()) - days * 86400
+    total = conn.execute(
+        "SELECT COUNT(*) FROM user_interactions WHERE created_at >= ?", (cutoff,)
+    ).fetchone()[0]
+    by_type = conn.execute(
+        """SELECT interaction_type, COUNT(*) as cnt
+           FROM user_interactions WHERE created_at >= ?
+           GROUP BY interaction_type""",
+        (cutoff,),
+    ).fetchall()
+    liked = conn.execute(
+        """SELECT item_id FROM user_interactions
+           WHERE interaction_type='liked' AND created_at >= ?""",
+        (cutoff,),
+    ).fetchall()
+    skipped = conn.execute(
+        """SELECT item_id FROM user_interactions
+           WHERE interaction_type='skipped' AND created_at >= ?""",
+        (cutoff,),
+    ).fetchall()
+    return {
+        "total": total,
+        "by_type": {r["interaction_type"]: r["cnt"] for r in by_type},
+        "liked_items": [r["item_id"] for r in liked],
+        "skipped_items": [r["item_id"] for r in skipped],
+    }
+
+
+def get_recently_recommended_item_ids(days: int = 7) -> set[str]:
+    conn = _get_conn()
+    cutoff = int(__import__("time").time()) - days * 86400
+    rows = conn.execute(
+        "SELECT DISTINCT item_id FROM internal_recommendations WHERE created_at >= ?",
+        (cutoff,),
+    ).fetchall()
+    return {r["item_id"] for r in rows}
+
+
+def get_items_by_ids(item_ids: list[str]) -> list[dict]:
+    if not item_ids:
+        return []
+    conn = _get_conn()
+    placeholders = ",".join("?" for _ in item_ids)
+    rows = conn.execute(
+        f"SELECT * FROM knowledge_items WHERE id IN ({placeholders})",
+        item_ids,
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+# ── 内部推荐记录 ──
+
+def insert_internal_recommendation(rec: dict) -> bool:
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO internal_recommendations
+               (id, item_id, score, score_breakdown, reason, triggered_by,
+                batch_id, gap_signals, delivered, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                rec.get("id", ""),
+                rec.get("item_id", ""),
+                rec.get("score", 0.0),
+                rec.get("score_breakdown", "{}"),
+                rec.get("reason", ""),
+                rec.get("triggered_by", ""),
+                rec.get("batch_id", ""),
+                rec.get("gap_signals"),
+                rec.get("delivered", 0),
+                rec.get("created_at", 0),
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"内部推荐写入失败: {e}")
+        return False
+
+
+def get_internal_recommendations(limit: int = 20, batch_id: str = None) -> list[dict]:
+    conn = _get_conn()
+    if batch_id:
+        rows = conn.execute(
+            "SELECT * FROM internal_recommendations WHERE batch_id=? ORDER BY score DESC LIMIT ?",
+            (batch_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM internal_recommendations ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        if d.get("score_breakdown") and isinstance(d["score_breakdown"], str):
+            try:
+                d["score_breakdown"] = json.loads(d["score_breakdown"])
+            except (json.JSONDecodeError, TypeError):
+                d["score_breakdown"] = {}
+        if d.get("gap_signals") and isinstance(d["gap_signals"], str):
+            try:
+                d["gap_signals"] = json.loads(d["gap_signals"])
+            except (json.JSONDecodeError, TypeError):
+                d["gap_signals"] = None
+        results.append(d)
+    return results
+
+
+def get_internal_recommendation_stats() -> dict:
+    conn = _get_conn()
+    total = conn.execute("SELECT COUNT(*) FROM internal_recommendations").fetchone()[0]
+    delivered = conn.execute(
+        "SELECT COUNT(*) FROM internal_recommendations WHERE delivered=1"
+    ).fetchone()[0]
+    avg_score = conn.execute(
+        "SELECT AVG(score) FROM internal_recommendations"
+    ).fetchone()[0] or 0
+    recent_gaps = conn.execute(
+        """SELECT gap_signals FROM internal_recommendations
+           WHERE gap_signals IS NOT NULL AND gap_signals != ''
+           ORDER BY created_at DESC LIMIT 5"""
+    ).fetchall()
+    return {
+        "total": total,
+        "delivered": delivered,
+        "avg_score": round(avg_score, 1),
+        "recent_gaps": [r["gap_signals"] for r in recent_gaps if r["gap_signals"]],
+    }
+
+
+# ── 职业目标缓存 ──
+
+def upsert_career_goals(goals_json: str, source_hash: str) -> bool:
+    conn = _get_conn()
+    now = int(__import__("time").time())
+    try:
+        conn.execute(
+            """INSERT INTO career_goals_cache (id, goals_json, extracted_at, source_hash)
+               VALUES (1, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+               goals_json=excluded.goals_json,
+               extracted_at=excluded.extracted_at,
+               source_hash=excluded.source_hash""",
+            (goals_json, now, source_hash),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"职业目标缓存写入失败: {e}")
+        return False
+
+
+def get_career_goals() -> dict | None:
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM career_goals_cache WHERE id=1").fetchone()
+    if not row:
+        return None
+    try:
+        return {
+            "goals": json.loads(row["goals_json"]),
+            "extracted_at": row["extracted_at"],
+            "source_hash": row["source_hash"],
+        }
+    except (json.JSONDecodeError, TypeError):
+        return None
+
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     """将 sqlite3.Row 转为 dict，并反序列化 JSON 字段"""

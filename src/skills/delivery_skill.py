@@ -97,3 +97,86 @@ def print_recommendations(recommendations: list[dict]) -> None:
         print(f"    理由: {r.get('reason', '')}")
         print(f"    分类: {r.get('category_match', '')}")
     print()
+
+
+# ── 内部推荐（知识库已有内容推荐） ──
+
+def notify_internal_recommendations(items: list[dict]) -> bool:
+    """桌面通知：内部知识库推荐"""
+    if not items:
+        return False
+    top = items[:3]
+    lines = [f"[{item.get('score', 0):.0f}%] {item.get('title', '')[:50]}" for item in top]
+    message = "\n".join(lines)
+    return notify_desktop("Knowledge Agent - 今日推荐", message)
+
+
+def save_internal_recommendations(
+    items: list[dict], batch_id: str, triggered_by: str = "scheduled",
+    gap_signals: list[dict] | None = None,
+) -> int:
+    """保存内部推荐结果到 SQLite"""
+    from knowledge.sqlite_store import insert_internal_recommendation
+
+    now = int(time.time())
+    saved = 0
+
+    gap_json = json.dumps(gap_signals, ensure_ascii=False) if gap_signals else None
+
+    for item in items:
+        record = {
+            "id": str(uuid.uuid4()),
+            "item_id": item.get("id", ""),
+            "score": item.get("score", 0),
+            "score_breakdown": json.dumps({
+                "content_sim": item.get("_content_sim", 0),
+                "career_boost": item.get("_career_boost", 0),
+                "recency": item.get("_recency", 0),
+                "engagement_penalty": item.get("_engagement_penalty", 0),
+                "diversity_bonus": item.get("_diversity_bonus", 0),
+            }, ensure_ascii=False),
+            "reason": item.get("reason", ""),
+            "triggered_by": triggered_by,
+            "batch_id": batch_id,
+            "gap_signals": gap_json,
+            "delivered": 1,
+            "created_at": now,
+        }
+
+        if insert_internal_recommendation(record):
+            saved += 1
+
+    logger.info(f"内部推荐已保存: {saved}/{len(items)} 条")
+    return saved
+
+
+def format_internal_recommendation_message(items: list[dict]) -> str:
+    """格式化内部推荐摘要"""
+    if not items:
+        return "暂无可推荐内容。"
+
+    lines = [f"知识库今日精选 {len(items)} 条:\n"]
+    for i, item in enumerate(items):
+        score = item.get("score", 0)
+        star = "⭐" if score >= 0.8 else "🔵" if score >= 0.6 else "📎"
+        title = item.get("title", "无标题")[:60]
+        reason = item.get("reason", "")[:100]
+        lines.append(f"{star} [{score*100:.0f}%] {title}\n   {reason}")
+    return "\n".join(lines)
+
+
+def print_internal_recommendations(items: list[dict]) -> None:
+    """终端友好输出内部推荐结果"""
+    print("\n" + "=" * 60)
+    print(format_internal_recommendation_message(items))
+    print("=" * 60)
+    for i, item in enumerate(items[:10]):
+        print(f"\n{'─' * 40}")
+        print(f"#{i+1}  [{item.get('score', 0)*100:.0f}%] {item.get('title', '')}")
+        print(f"    ID: {item.get('id', '')[:8]}")
+        print(f"    理由: {item.get('reason', '')}")
+        print(f"    分类: {item.get('category', '')}")
+        print(f"    内容: {(item.get('content_sim', 0)*100):.0f}% | "
+              f"职业: {(item.get('career_boost', 0)*100):.0f}% | "
+              f"时间: {(item.get('recency', 0)*100):.0f}%")
+    print()

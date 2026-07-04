@@ -83,7 +83,8 @@ def _generate_search_queries(profile: dict) -> list[str]:
         return fallback
 
 
-def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False) -> dict:
+def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
+                         use_gap_signals: bool = False) -> dict:
     """执行一次完整的发现周期"""
     start = time.time()
     logger.info("=" * 50)
@@ -96,9 +97,19 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False) -> 
     logger.info(f"  偏好分类: {profile.get('preferred_categories', [])}")
     logger.info(f"  知识盲区: {profile.get('knowledge_gaps', [])}")
 
+    # 1.5 加载缺口信号（来自 Recommendation Agent）
+    gap_queries = []
+    if use_gap_signals:
+        gap_queries = _load_gap_signals()
+        if gap_queries:
+            logger.info(f"  已加载 {len(gap_queries)} 个缺口搜索词")
+
     # 2. 生成搜索词
     logger.info("[2/6] 生成搜索词...")
     queries = _generate_search_queries(profile)
+    queries.extend(gap_queries)
+    if gap_queries:
+        logger.info(f"  追加缺口搜索词: {gap_queries}")
 
     # 3. 全网搜索
     logger.info(f"[3/6] 全网搜索（{len(queries)} 个查询）...")
@@ -151,6 +162,32 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False) -> 
         "profile": profile,
         "elapsed": round(elapsed, 1),
     }
+
+
+def _load_gap_signals() -> list[str]:
+    """从 Recommendation Agent 的最新输出中加载缺口搜索词"""
+    try:
+        from knowledge.sqlite_store import _get_conn
+        conn = _get_conn()
+        rows = conn.execute(
+            """SELECT gap_signals FROM internal_recommendations
+               WHERE gap_signals IS NOT NULL AND gap_signals != ''
+               ORDER BY created_at DESC LIMIT 5"""
+        ).fetchall()
+        queries = []
+        for row in rows:
+            try:
+                gaps = json.loads(row["gap_signals"])
+                for g in gaps:
+                    q = g.get("suggested_query", "")
+                    if q and q not in queries:
+                        queries.append(q)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return queries
+    except Exception as e:
+        logger.warning(f"加载缺口信号失败: {e}")
+        return []
 
 
 def _show_stats():
@@ -259,6 +296,7 @@ def main():
     parser.add_argument("--stats", action="store_true", help="查看推荐历史统计")
     parser.add_argument("--install-launchd", action="store_true", help="安装 macOS launchd 定时任务（每天 06:00/18:00）")
     parser.add_argument("--generate-plist", action="store_true", help="生成 launchd plist 文件到 stdout，不安装")
+    parser.add_argument("--use-gap-signals", action="store_true", help="加载 Recommendation Agent 的缺口信号作为额外搜索词")
 
     args = parser.parse_args()
 
@@ -272,18 +310,21 @@ def main():
 
     if args.dry_run:
         logger.info("DRY RUN 模式 — 不会保存或推送")
-        _run_discovery_cycle(dry_run=True, fetch_content=args.fetch_content)
+        _run_discovery_cycle(dry_run=True, fetch_content=args.fetch_content,
+                            use_gap_signals=args.use_gap_signals)
         return
 
     if args.run:
-        _run_discovery_cycle(dry_run=False, fetch_content=args.fetch_content)
+        _run_discovery_cycle(dry_run=False, fetch_content=args.fetch_content,
+                            use_gap_signals=args.use_gap_signals)
         return
 
     if args.daemon:
         logger.info(f"守护模式启动，间隔 {args.interval}s")
         while _running:
             try:
-                _run_discovery_cycle(dry_run=False, fetch_content=args.fetch_content)
+                _run_discovery_cycle(dry_run=False, fetch_content=args.fetch_content,
+                                    use_gap_signals=args.use_gap_signals)
             except Exception as e:
                 logger.error(f"发现周期异常: {e}", exc_info=True)
             if _running:

@@ -139,6 +139,60 @@ def api_recommendations():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/internal-recommendations")
+def api_internal_recommendations():
+    try:
+        from knowledge.sqlite_store import get_internal_recommendations
+        limit = request.args.get("limit", 20, type=int)
+        items = get_internal_recommendations(limit=limit)
+        return jsonify({"items": items, "total": len(items)})
+    except Exception as e:
+        logger.warning(f"/api/internal-recommendations 失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/interactions")
+def api_interactions():
+    try:
+        from knowledge.sqlite_store import get_interactions
+        limit = request.args.get("limit", 50, type=int)
+        item_id = request.args.get("item_id")
+        items = get_interactions(item_id=item_id, limit=limit)
+        return jsonify({"items": items, "total": len(items)})
+    except Exception as e:
+        logger.warning(f"/api/interactions 失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/interact", methods=["POST"])
+def api_interact():
+    try:
+        from skills.feedback_skill import record_interaction
+        data = request.get_json() or {}
+        ok = record_interaction(
+            item_id=data.get("item_id", ""),
+            interaction_type=data.get("type", "read"),
+            batch_id=data.get("batch_id"),
+            score=data.get("score"),
+            context=data.get("context"),
+        )
+        return jsonify({"ok": ok})
+    except Exception as e:
+        logger.warning(f"/api/interact 失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/career-goals")
+def api_career_goals():
+    try:
+        from skills.career_goal_skill import extract_career_goals
+        goals = extract_career_goals()
+        return jsonify(goals)
+    except Exception as e:
+        logger.warning(f"/api/career-goals 失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/recommendations/stats")
 def api_recommendation_stats():
     try:

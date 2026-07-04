@@ -114,10 +114,10 @@ def _fallback_profile() -> dict:
         sorted_cats = sorted(categories.items(), key=lambda x: -x[1])
 
         all_categories = [
-            "个人成长", "科技与AI", "效率方法", "产品与工具", "健康与心理",
-            "人际关系", "美食与消费", "职业发展", "金融投资", "设计审美",
-            "教育学习", "娱乐休闲", "社会观察", "历史人文", "自然科学",
-            "技术编程", "医学健康", "法律", "其他",
+            "科技与AI", "产品与工具", "阅读与影视", "职场与创业", "投资与商业",
+            "设计与创意", "生活与旅行", "健康与心理", "教育与学习", "人文与哲学",
+            "社会与热点", "美食与消费", "人际关系", "个人成长", "效率方法",
+            "数据与报告", "自然科学", "技术编程", "医学健康", "其他",
         ]
         existing_cats = set(categories.keys())
         gaps = [c for c in all_categories if c not in existing_cats][:3]
