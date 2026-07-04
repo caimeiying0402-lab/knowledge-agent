@@ -789,13 +789,17 @@ class CDPEngine(BaseEngine):
         """确保已登录"""
         if self._probe_login():
             return True
+        import sys as _sys
+        if not _sys.stdin.isatty():
+            raise RuntimeError(
+                "BOSS直聘未登录！请在隔离Chrome窗口中登录 zhipin.com 后重试"
+            )
         print("\n" + "=" * 60)
         print("  ⚠️  BOSS直聘未登录或登录态失效")
         print("  请在隔离 Chrome 窗口中手动登录 zhipin.com")
         print("  登录成功后按回车继续...")
         print("=" * 60)
         input()
-        # 重新提取Cookie（登录后Cookie变了）
         self._cookie_str = None
         self._cookies = None
         return self._probe_login()
@@ -820,17 +824,36 @@ class CDPEngine(BaseEngine):
             jobs = data.get("zpData", {}).get("jobList", [])
             results = []
             for j in jobs:
+                tags = [l if isinstance(l, str) else l.get("name", "") for l in (j.get("jobLabels") or [])]
+                # 拼装可用于匹配的完整描述
+                desc_parts = [
+                    j.get("jobName", ""),
+                    j.get("brandName", ""),
+                    j.get("salaryDesc", ""),
+                    j.get("cityName", ""),
+                    j.get("experienceName", ""),
+                    j.get("degreeName", ""),
+                ]
+                # 加入岗位描述摘要（API 有时会返回简短描述）
+                brief = j.get("jobDescription") or j.get("jobDesc") or ""
+                if brief:
+                    desc_parts.append(brief[:500])
+                if tags:
+                    desc_parts.append("标签: " + ", ".join(tags))
+                desc = " | ".join([p for p in desc_parts if p])
+
                 results.append({
                     "title": j.get("jobName", ""),
                     "company": j.get("brandName", ""),
-                    "salary": j.get("salaryDesc", ""),  # ← 明文！
+                    "salary": j.get("salaryDesc", ""),
                     "location": j.get("cityName", ""),
                     "encryptId": j.get("encryptJobId", ""),
                     "lid": j.get("lid", ""),
                     "securityId": j.get("securityId", ""),
-                    "tags": [l if isinstance(l, str) else l.get("name", "") for l in (j.get("jobLabels") or [])],
+                    "tags": tags,
                     "experience": j.get("experienceName", ""),
                     "education": j.get("degreeName", ""),
+                    "description": desc,
                     "publishTime": j.get("publishTime", ""),
                 })
             logger.info(f"  API返回: {len(results)} 条 ({kw} 第{page_num}页)")
@@ -885,15 +908,22 @@ class CDPEngine(BaseEngine):
         return all_listings
 
     def get_detail(self, url: str) -> Optional[JobDetail]:
-        """获取详情 — 导航到详情页提取JD"""
+        """获取详情 — 导航到详情页提取JD（仅用于TOP 3）"""
         if not url:
             return None
         self._ensure_browser()
         ctx = self._browser.contexts[0]
         page = ctx.new_page()
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            page.wait_for_timeout(random.uniform(2000, 4000))
+            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_timeout(3000)
+            # 等页面完全稳定
+            for _ in range(5):
+                try:
+                    _ = page.evaluate("document.title")
+                    break
+                except Exception:
+                    time.sleep(2)
             jd_text = page.evaluate("""() => {
                 const sels = ['.job-sec-text', '.job-detail', '.detail-content',
                               '.text', '.job-boss-desc', '.job-description',
@@ -904,13 +934,52 @@ class CDPEngine(BaseEngine):
                 }
                 return document.body ? document.body.innerText.substring(0, 3000) : '';
             }""")
-            return JobDetail(title=page.title(), company="", jd_text=jd_text, url=url)
+            return JobDetail(title=page.title(), company="", jd_text=jd_text or "", url=url)
+        except Exception as e:
+            logger.warning(f"获取详情失败 {url[:80]}: {e}")
+            return JobDetail(title="", company="", jd_text="", url=url)
         finally:
             try:
                 page.close()
             except Exception:
                 pass
-            self._human_delay(self.MIN_DETAIL_DELAY, self.MAX_DETAIL_DELAY)
+
+    def search_with_details(self, keywords: list[str], filters: dict) -> list[JobDetail]:
+        """搜索 + 构建详情（API数据即JD，无需额外请求）"""
+        s = self._get_session()
+        all_details = []
+        keywords = keywords[:self.MAX_KEYWORDS]
+
+        for kw in keywords:
+            logger.info(f"搜索: {kw}")
+            for page_num in range(1, self.MAX_PAGES + 1):
+                raw = self._call_search_api(kw, page_num)
+                if not raw:
+                    break
+                for r in raw:
+                    url = f"https://www.zhipin.com/job_detail/{r['encryptId']}.html"
+                    if r["lid"]:
+                        url += f"?lid={r['lid']}"
+                    if r["securityId"]:
+                        url += f"&securityId={r['securityId']}" if "?" in url else f"?securityId={r['securityId']}"
+                    all_details.append(JobDetail(
+                        title=r["title"], company=r["company"],
+                        jd_text=r["description"],
+                        salary=r["salary"], location=r["location"],
+                        url=url,
+                        experience_years=r.get("experience", ""),
+                        education=r.get("education", ""),
+                        tags=r.get("tags", []),
+                        publish_time=r.get("publishTime", ""),
+                    ))
+                if len(raw) < self.PAGE_SIZE:
+                    break
+                if page_num < self.MAX_PAGES:
+                    self._human_delay(self.MIN_PAGE_DELAY, self.MAX_PAGE_DELAY)
+            self._human_delay(5, 10)
+
+        logger.info(f"搜索完成: {len(all_details)} 个岗位")
+        return all_details
 
     def stop(self):
         """断开CDP"""

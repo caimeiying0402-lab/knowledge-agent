@@ -100,25 +100,27 @@ def cmd_match(args):
 
 
 def cmd_search_only(args):
-    """搜索岗位列表 + 匹配评分"""
-    from skills.job_search_skill import search_jobs, get_job_detail, load_filters
+    """全链路：搜索岗位 → 匹配评分 → TOP 3 → 简历定制 + 打招呼"""
+    from skills.job_search_skill import search_jobs, load_filters
     from skills.match_skill import match
+    from skills.resume_customize_skill import batch_customize
 
     resume = load_resume()
     config = load_filters()
     keywords = config.get("search", {}).get("keywords", [])
 
     print("=" * 60)
-    print("  Job Agent — 岗位搜索 + 匹配")
+    print("  Job Agent — 搜索 → 匹配 → TOP3 → 定制")
     print("=" * 60)
 
-    engine = args.engine or "manual"
+    engine = args.engine or "cdp"
     print(f"  引擎: {engine}")
-    print(f"  关键词: {', '.join(keywords[:3])}...")
+    print(f"  关键词: {', '.join(keywords[:5])}")
     print(f"  最大结果: {args.max_results}")
     print("=" * 60)
 
-    print("\n🔍 正在搜索岗位...")
+    # ═══ Step 1: 搜索岗位 ═══
+    print("\n🔍 [1/4] 正在搜索岗位...")
     try:
         details = search_jobs(keywords=keywords, engine=engine, max_results=args.max_results)
     except Exception as e:
@@ -128,48 +130,77 @@ def cmd_search_only(args):
     if not details:
         print("⚠️ 未找到岗位")
         return 0
+    print(f"✅ 搜索到 {len(details)} 个岗位")
 
-    print(f"\n✅ 搜索到 {len(details)} 个岗位")
-    print("=" * 60)
-
-    # 逐一匹配评分
+    # ═══ Step 2: 匹配评分 ═══
+    print(f"\n🔍 [2/4] 正在匹配评分...")
     scored = []
     for i, d in enumerate(details):
-        print(f"\n[{i+1}/{len(details)}] {d.title} @ {d.company}")
-        if d.salary:
-            print(f"    💰 {d.salary}")
-
         if d.jd_text:
-            print("    🔍 正在匹配评分...")
             result = match(resume, d.jd_text)
             score = result.get("score", 0)
-            suggestion = result.get("suggestion", "")
-            print(f"    匹配结果: {score}分 — {suggestion}")
             scored.append((score, d, result))
         else:
-            print("    ⚠️ 无JD详情，跳过匹配")
             scored.append((0, d, None))
+        if (i + 1) % 5 == 0:
+            print(f"  已完成 {i+1}/{len(details)}...")
 
-    # 按分数排序
     scored.sort(key=lambda x: x[0], reverse=True)
+    top3 = scored[:3]
+    print(f"✅ 匹配完成，TOP 3 最高分: {top3[0][0] if top3 else 0}")
 
+    # ═══ Step 3: TOP 3 展示 ═══
     print("\n" + "=" * 60)
-    print("  📊 Top 匹配结果")
+    print("  📊 TOP 3 匹配岗位")
     print("=" * 60)
-    for i, (score, d, result) in enumerate(scored[:5]):
-        print(f"\n  #{i+1} {d.title} @ {d.company} — {score}分")
+    for i, (score, d, result) in enumerate(top3):
+        star = "⭐" if score >= 80 else "🔵" if score >= 65 else "📎"
+        print(f"\n  #{i+1} {star} {d.title} @ {d.company} — {score}分")
         if d.salary:
             print(f"     💰 {d.salary}")
         if d.url:
-            print(f"     🔗 {d.url}")
+            print(f"     🔗 {d.url[:100]}")
         if result:
-            mp = result.get("match_points", [])
-            gp = result.get("gap_points", [])
-            if mp:
-                print(f"     ✅ {mp[0]}")
-            if gp:
-                print(f"     ⚠️ {gp[0]}")
+            for mp in (result.get("match_points") or [])[:2]:
+                print(f"     ✅ {mp}")
+            for gp in (result.get("gap_points") or [])[:1]:
+                print(f"     ⚠️ {gp}")
 
+    # ═══ Step 4: 简历定制 + 打招呼 ═══
+    if args.no_customize:
+        print("\n⏭️  跳过简历定制 (--no-customize)")
+        return 0
+
+    print(f"\n🔍 [3/4] 正在为 TOP 3 生成个性化简历+打招呼语...")
+    customized = batch_customize(resume, top3)
+
+    print("\n" + "=" * 60)
+    print("  ✨ TOP 3 — 个性化简历摘要 + 打招呼语")
+    print("=" * 60)
+
+    for i, c in enumerate(customized):
+        print(f"\n{'─' * 50}")
+        print(f"  📌 #{i+1} [{c['score']}分] {c['title']} @ {c['company']}")
+        if c.get("jd_type"):
+            print(f"     岗位类型: {c['jd_type']}")
+        if c.get("customized_summary"):
+            print(f"\n  📝 个性化简历摘要:")
+            print(f"     {c['customized_summary'][:500]}")
+        if c.get("greeting"):
+            print(f"\n  💬 打招呼语:")
+            print(f"     {c['greeting'][:400]}")
+        if c.get("jd_keyword_gaps"):
+            print(f"\n  ⚠️ 能力差距:")
+            for gap in c["jd_keyword_gaps"][:3]:
+                print(f"     - {gap}")
+
+    # ═══ 汇总 ═══
+    print(f"\n{'=' * 60}")
+    print(f"  ✅ 全链路完成!")
+    print(f"     搜索: {len(details)} 个岗位")
+    print(f"     匹配: {len(scored)} 个评分")
+    print(f"     定制: {len(customized)} 份简历+打招呼")
+    print(f"{'=' * 60}")
     return 0
 
 
@@ -185,10 +216,11 @@ def main():
         description="Job Agent — 简历×岗位JD自动匹配系统"
     )
     parser.add_argument("--schedule", action="store_true", help="定时模式 (Phase 4)")
-    parser.add_argument("--search-only", action="store_true", help="仅搜索+匹配")
+    parser.add_argument("--search-only", action="store_true", help="搜索+匹配+TOP3+定制简历")
+    parser.add_argument("--no-customize", action="store_true", help="跳过简历定制（仅搜索+匹配）")
     parser.add_argument("--engine", type=str, default=None,
-                        choices=["manual", "playwright", "scraping"],
-                        help="搜索引擎 (默认 manual)")
+                        choices=["manual", "playwright", "scraping", "cdp"],
+                        help="搜索引擎 (默认 manual，推荐 cdp)")
     parser.add_argument("--max-results", type=int, default=20)
     parser.add_argument("--stats", action="store_true", help="查看历史投递记录")
     parser.add_argument("--jd-file", type=str, help="从文件读取JD文本")
