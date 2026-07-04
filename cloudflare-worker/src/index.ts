@@ -3,6 +3,8 @@
  * 绕开 crypto.subtle / node:crypto，自己实现 AES + PKCS7
  */
 
+import { discoveryFetch, discoveryScheduled } from './discovery';
+
 interface Env {
   DB: D1Database; IMAGES: R2Bucket;
   WECOM_TOKEN: string; WECOM_AES_KEY: string; WECOM_CORP_ID: string;
@@ -394,6 +396,9 @@ async function handleImageGet(req: Request, env: Env, key: string): Promise<Resp
 }
 
 export default {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    await discoveryScheduled(event, env, ctx);
+  },
   async fetch(req: Request, env: Env): Promise<Response> {
     const {pathname:p}=new URL(req.url); const m=req.method;
     if(m==="OPTIONS")return new Response(null,{headers:{"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,POST,OPTIONS","Access-Control-Allow-Headers":"Authorization,Content-Type"}});
@@ -405,6 +410,7 @@ export default {
       if(p.startsWith("/api/image/")&&m==="GET")return handleImageGet(req,env,decodeURIComponent(p.slice(11)));
       if(p==="/health"&&m==="GET")return Response.json({ok:true,ts:Math.floor(Date.now()/1000)});
       if(p==="/api/stats"&&m==="GET")return handleStats(req,env);
+      if(p.startsWith("/api/discovery/"))return discoveryFetch(req,env);
       return new Response("nf",{status:404});
     }catch(e){console.error(`[fatal] ${e}`);return new Response("err",{status:500});}
   },

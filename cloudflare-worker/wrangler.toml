@@ -10,3 +10,6 @@ database_id = "a762fdcf-2c5d-47ac-aafe-1b7d36a1122a"
 [[r2_buckets]]
 binding = "IMAGES"
 bucket_name = "knowledge-agent-images"
+
+[triggers]
+crons = ["0 22 * * *", "0 10 * * *"]
