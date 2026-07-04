@@ -1,5 +1,4 @@
-"""Job Agent 主控 — Phase 2: 岗位搜索 + 匹配评分 → 终端输出"""
-import json
+"""Job Agent 主控 — 搜索 → 匹配 → TOP3 → 简历定制"""
 import argparse
 import sys
 import logging
@@ -8,19 +7,21 @@ from pathlib import Path
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
 BASE_DIR = Path(__file__).parent.parent.parent
-RESUME_PATH = BASE_DIR / "src" / "agents" / "resume_profile.json"
+PERSONAL_INFO_PATH = Path("/Users/caimeiying/AI-Agent-Lab/skills/personal_info.md")
 
 
-def load_resume() -> dict:
-    with open(RESUME_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+def load_personal_info() -> str:
+    """加载个人资料（唯一数据源）"""
+    if PERSONAL_INFO_PATH.exists():
+        return PERSONAL_INFO_PATH.read_text(encoding="utf-8")
+    return ""
 
 
 def cmd_match(args):
     """手动输入JD → 匹配评分 → 终端输出"""
     from skills.match_skill import match
 
-    resume = load_resume()
+    personal_info = load_personal_info()
 
     if args.jd_file:
         with open(args.jd_file, "r", encoding="utf-8") as f:
@@ -29,11 +30,7 @@ def cmd_match(args):
         print("=" * 60)
         print("  Job Agent — 岗位匹配引擎")
         print("=" * 60)
-        name = resume.get("personal", {}).get("name", "未知")
-        yrs = resume.get("personal", {}).get("years_of_experience", "未知")
-        loc = resume.get("personal", {}).get("target_location", "未知")
-        print(f"  简历: {name} ({yrs})")
-        print(f"  目标: {loc} / 财务产品经理")
+        print(f"  数据源: personal_info.md")
         print("-" * 60)
         print("  请粘贴JD文本，输入完成后输入 EOF 结束：")
         print("-" * 60)
@@ -53,7 +50,7 @@ def cmd_match(args):
         return 1
 
     print("\n🔍 正在匹配评分...")
-    result = match(resume, jd_text)
+    result = match(jd_text, personal_info)
 
     score = result.get("score", 0)
     suggestion = result.get("suggestion", "")
@@ -105,7 +102,7 @@ def cmd_search_only(args):
     from skills.match_skill import match
     from skills.resume_customize_skill import batch_customize
 
-    resume = load_resume()
+    personal_info = load_personal_info()
     config = load_filters()
     keywords = config.get("search", {}).get("keywords", [])
 
@@ -202,7 +199,7 @@ def cmd_search_only(args):
         return 0
 
     print(f"\n🔍 [3/4] 正在为 TOP 3 生成个性化简历+打招呼语...")
-    customized = batch_customize(resume, top3)
+    customized = batch_customize(top3)
 
     print("\n" + "=" * 60)
     print("  ✨ TOP 3 — 个性化简历摘要 + 打招呼语")

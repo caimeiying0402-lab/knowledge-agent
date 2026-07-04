@@ -18,7 +18,7 @@ def _load_personal_info() -> str:
     return ""
 
 
-def customize(resume: dict, jd_text: str, match_result: dict, job_title: str = "",
+def customize(jd_text: str, match_result: dict, job_title: str = "",
               company: str = "", salary: str = "") -> dict:
     """为单个岗位生成个性化简历摘要 + 打招呼语
 
@@ -73,13 +73,12 @@ def customize(resume: dict, jd_text: str, match_result: dict, job_title: str = "
         return _fallback_customize(jd_text)
 
 
-def batch_customize(resume: dict, top_jobs: list[tuple]) -> list[dict]:
+def batch_customize(top_jobs: list[tuple]) -> list[dict]:
     """批量处理 TOP N 岗位，每个返回定制结果"""
     results = []
     for score, detail, match_result in top_jobs:
         logger.info(f"定制简历: {detail.title} @ {detail.company} ({score}分)")
         custom = customize(
-            resume=resume,
             jd_text=detail.jd_text,
             match_result=match_result or {},
             job_title=detail.title,

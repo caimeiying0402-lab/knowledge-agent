@@ -18,32 +18,39 @@ DEFAULT_RESULT = {
 }
 
 
-def match(resume: dict, jd_text: str) -> dict:
+PERSONAL_INFO_PATH = Path("/Users/caimeiying/AI-Agent-Lab/skills/personal_info.md")
+
+
+def load_personal_info() -> str:
+    """加载个人资料（唯一数据源）"""
+    if PERSONAL_INFO_PATH.exists():
+        return PERSONAL_INFO_PATH.read_text(encoding="utf-8")
+    logger.warning(f"personal_info.md 不存在: {PERSONAL_INFO_PATH}")
+    return ""
+
+
+def match(jd_text: str, personal_info: str = "") -> dict:
     """
-    对简历和岗位JD进行匹配评分。
+    对岗位JD进行匹配评分。
 
     Args:
-        resume: 简历结构化JSON（resume_profile.json schema）
         jd_text: 岗位JD文本
+        personal_info: 个人资料 Markdown（可选，默认自动加载）
 
     Returns:
-        {
-            "score": int,           # 0-100
-            "breakdown": {...},     # 各维度得分
-            "match_points": [...],  # 匹配点
-            "gap_points": [...],    # 差距点
-            "overall_assessment": str,
-            "suggestion": str       # 强推/可投/观望/不建议
-        }
+        {"score": int, "breakdown": {...}, "match_points": [...],
+         "gap_points": [...], "overall_assessment": str, "suggestion": str}
     """
-    # 1. 加载 prompt
+    if not personal_info:
+        personal_info = load_personal_info()
+    if not personal_info:
+        return DEFAULT_RESULT
+
     prompt_path = BASE_DIR / "prompts" / "job_match_prompt.txt"
     with open(prompt_path, "r", encoding="utf-8") as f:
         system_prompt = f.read()
 
-    # 2. 构建用户消息
-    resume_json = json.dumps(resume, ensure_ascii=False, indent=2)
-    user_message = f"【候选人简历】\n{resume_json}\n\n【目标岗位JD】\n{jd_text}"
+    user_message = f"【候选人详细资料】\n{personal_info}\n\n【目标岗位JD】\n{jd_text}"
 
     # 3. 调用 DeepSeek
     response = chat(system_prompt, user_message)
