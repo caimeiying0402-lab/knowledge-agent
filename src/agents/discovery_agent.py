@@ -175,6 +175,70 @@ def _show_stats():
             print(f"    {r['url'][:100]}")
 
 
+def _generate_plist_content() -> str:
+    """生成 launchd plist 文件内容"""
+    _d = str(_BASE_DIR)
+    _py = str(_BASE_DIR / '.venv' / 'bin' / 'python3')
+    _script = str(_BASE_DIR / 'src' / 'agents' / 'discovery_agent.py')
+    _src = str(_BASE_DIR / 'src')
+    _log = str(_BASE_DIR / 'logs' / 'discovery-agent.log')
+    _err = str(_BASE_DIR / 'logs' / 'discovery-agent.err')
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        '<dict>',
+        '    <key>Label</key>',
+        '    <string>com.knowledge-agent.discovery</string>',
+        '    <key>ProgramArguments</key>',
+        '    <array>',
+        f"        <string>{_py}</string>",
+        f"        <string>{_script}</string>",
+        '        <string>--run</string>',
+        '    </array>',
+        '    <key>WorkingDirectory</key>',
+        f"    <string>{_d}</string>",
+        '    <key>EnvironmentVariables</key>',
+        '    <dict>',
+        f"        <key>PYTHONPATH</key><string>{_src}</string>",
+        '    </dict>',
+        '    <key>StandardOutPath</key>',
+        f"    <string>{_log}</string>",
+        '    <key>StandardErrorPath</key>',
+        f"    <string>{_err}</string>",
+        '    <key>StartCalendarInterval</key>',
+        '    <array>',
+        '        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>',
+        '        <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>',
+        '    </array>',
+        '    <key>RunAtLoad</key>',
+        '    <false/>',
+        '    <key>KeepAlive</key>',
+        '    <false/>',
+        '</dict>',
+        '</plist>',
+    ]
+    return chr(10).join(lines)
+
+def _print_plist():
+    """输出 plist 配置"""
+    print(_generate_plist_content())
+    print("# 保存至: ~/Library/LaunchAgents/com.knowledge-agent.discovery.plist")
+    print("# 加载: launchctl load ~/Library/LaunchAgents/com.knowledge-agent.discovery.plist")
+
+def _install_launchd():
+    """安装 launchd 定时任务"""
+    import subprocess
+    plist_name = "com.knowledge-agent.discovery.plist"
+    dst = Path.home() / 'Library' / 'LaunchAgents' / plist_name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(dst, 'w', encoding='utf-8') as f:
+        f.write(_generate_plist_content())
+    subprocess.run(['launchctl', 'load', str(dst)], check=False)
+    print(f"  launchd \u4efb\u52a1\u5df2\u5b89\u88c5: {dst}")
+    print(f"  \u8fd0\u884c\u65f6\u95f4: \u6bcf\u5929 06:00, 18:00")
+    print(f"  \u5378\u8f7d: launchctl unload {dst}")
+
 def main():
     parser = argparse.ArgumentParser(
         description="Discovery Agent — 知识发现与推荐引擎",
@@ -193,6 +257,8 @@ def main():
     parser.add_argument("--interval", type=int, default=3600, help="守护模式间隔（秒），默认3600")
     parser.add_argument("--fetch-content", action="store_true", help="抓取搜索结果页面全文")
     parser.add_argument("--stats", action="store_true", help="查看推荐历史统计")
+    parser.add_argument("--install-launchd", action="store_true", help="安装 macOS launchd 定时任务（每天 06:00/18:00）")
+    parser.add_argument("--generate-plist", action="store_true", help="生成 launchd plist 文件到 stdout，不安装")
 
     args = parser.parse_args()
 
