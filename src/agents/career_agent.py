@@ -120,12 +120,42 @@ def cmd_search_only(args):
     print("=" * 60)
 
     # ═══ Step 1: 搜索岗位 ═══
-    print("\n🔍 [1/4] 正在搜索岗位...")
-    try:
-        details = search_jobs(keywords=keywords, engine=engine, max_results=args.max_results)
-    except Exception as e:
-        print(f"❌ 搜索失败: {e}")
-        return 1
+    print(f"\n🔍 [1/4] 正在搜索岗位 (平台: {args.platform})...")
+    details = []
+
+    # BOSS搜索
+    if args.platform in ("boss", "both"):
+        try:
+            boss_results = search_jobs(keywords=keywords, engine=engine, max_results=args.max_results)
+            details.extend(boss_results)
+            print(f"  BOSS: {len(boss_results)} 个岗位")
+        except Exception as e:
+            print(f"  ⚠️ BOSS搜索失败: {e}")
+
+    # 猎聘搜索
+    if args.platform in ("liepin", "both"):
+        try:
+            from skills.liepin_search_skill import search_liepin
+            liepin_raw = search_liepin(keywords, max_results=args.max_results)
+            from skills.job_search_skill import JobDetail
+            for r in liepin_raw:
+                details.append(JobDetail(
+                    title=r["title"], company=r["company"],
+                    jd_text=f"{r['title']} | {r.get('salary','')} | {r.get('location','')} | {r.get('experience','')} | {r.get('education','')}",
+                    salary=r.get("salary", ""), location=r.get("location", ""),
+                    url=r.get("url", ""),
+                    experience_years=r.get("experience", ""),
+                    education=r.get("education", ""),
+                    platform="liepin",
+                ))
+            print(f"  猎聘: {len(liepin_raw)} 个岗位")
+        except Exception as e:
+            print(f"  ⚠️ 猎聘搜索失败: {e}")
+
+    if not details:
+        print("⚠️ 未找到岗位")
+        return 0
+    print(f"✅ 共搜索到 {len(details)} 个岗位")
 
     if not details:
         print("⚠️ 未找到岗位")
@@ -200,6 +230,80 @@ def cmd_search_only(args):
     print(f"     搜索: {len(details)} 个岗位")
     print(f"     匹配: {len(scored)} 个评分")
     print(f"     定制: {len(customized)} 份简历+打招呼")
+
+    # ═══ 保存到文件 ═══
+    import time as _time
+    output_dir = BASE_DIR / "data" / "job_output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = _time.strftime("%Y%m%d_%H%M%S")
+
+    # 保存 TOP 3 汇总 markdown
+    summary_path = output_dir / f"top3_summary_{ts}.md"
+    lines = [
+        f"# TOP 3 岗位匹配结果",
+        f"",
+        f"生成时间: {_time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"搜索关键词: {', '.join(keywords[:5])}",
+        f"搜索岗位数: {len(details)}",
+        f"",
+    ]
+    for i, c in enumerate(customized):
+        lines.append(f"---")
+        lines.append(f"")
+        lines.append(f"## #{i+1} [{c['score']}分] {c['title']} @ {c['company']}")
+        lines.append(f"")
+        if c.get('salary'):
+            lines.append(f"**薪资:** {c['salary']}")
+        if c.get('url'):
+            lines.append(f"**链接:** {c['url']}")
+        if c.get('jd_type'):
+            lines.append(f"**岗位类型:** {c['jd_type']}")
+        lines.append(f"")
+        if c.get('match_points'):
+            lines.append(f"### ✅ 匹配点")
+            for mp in c['match_points'][:5]:
+                lines.append(f"- {mp}")
+        if c.get('gap_points'):
+            lines.append(f"")
+            lines.append(f"### ⚠️ 差距点")
+            for gp in c['gap_points'][:5]:
+                lines.append(f"- {gp}")
+        if c.get('customized_summary'):
+            lines.append(f"")
+            lines.append(f"### 📝 个性化简历摘要")
+            lines.append(f"")
+            lines.append(c['customized_summary'])
+        if c.get('greeting'):
+            lines.append(f"")
+            lines.append(f"### 💬 打招呼语")
+            lines.append(f"")
+            lines.append(c['greeting'])
+        if c.get('jd_keyword_gaps'):
+            lines.append(f"")
+            lines.append(f"### 🔍 能力差距分析")
+            for gap in c['jd_keyword_gaps']:
+                lines.append(f"- {gap}")
+    summary_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"     输出文件: {summary_path}")
+
+    # 单独保存每份简历的定制摘要（方便复制粘贴投递）
+    for i, c in enumerate(customized):
+        job_path = output_dir / f"job_{i+1}_{c['company']}_{ts}.md"
+        job_lines = [
+            f"# {c['title']} @ {c['company']}",
+            f"匹配分数: {c['score']}分 | {c.get('jd_type', '')}",
+            f"薪资: {c.get('salary', '未知')}",
+            f"",
+            f"## 个性化简历摘要",
+            f"",
+            c.get('customized_summary', ''),
+            f"",
+            f"## 打招呼语",
+            f"",
+            c.get('greeting', ''),
+        ]
+        job_path.write_text("\n".join(job_lines), encoding="utf-8")
+
     print(f"{'=' * 60}")
     return 0
 
@@ -222,6 +326,9 @@ def main():
                         choices=["manual", "playwright", "scraping", "cdp"],
                         help="搜索引擎 (默认 manual，推荐 cdp)")
     parser.add_argument("--max-results", type=int, default=20)
+    parser.add_argument("--platform", type=str, default="boss",
+                        choices=["boss", "liepin", "both"],
+                        help="搜索平台 (默认 boss)")
     parser.add_argument("--stats", action="store_true", help="查看历史投递记录")
     parser.add_argument("--jd-file", type=str, help="从文件读取JD文本")
 

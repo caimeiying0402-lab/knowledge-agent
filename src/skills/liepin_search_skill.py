@@ -1,120 +1,141 @@
-"""猎聘搜索引擎 — 独立文件，不依赖 job_search_skill.py
-使用 ScrapingFish API 搜索猎聘岗位
+"""猎聘搜索引擎 — CDP拦截API方案（稳定，不依赖第三方API）
+与 job_search_skill.py 的 CDPEngine 共享同一个隔离 Chrome
 """
 import json
 import logging
-import re
-import requests
-from dataclasses import dataclass
+import random
+import time
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent.parent
 
 
-@dataclass
-class JobItem:
-    title: str
-    company: str
-    salary: str = ""
-    location: str = ""
-    url: str = ""
-    platform: str = "liepin"
+def search_liepin(keywords: list[str], max_results: int = 40,
+                  cdp_url: str = "http://localhost:9222") -> list[dict]:
+    """CDP拦截猎聘搜索API → 返回结构化岗位列表
 
+    共享 BOSS CDPEngine 的隔离 Chrome（同一个 :9222 端口）
 
-SCRAPINGFISH_API = "https://api.scrapingfish.com/api/v1/"
-
-
-def search_liepin(keyword: str, api_key: str = "", max_results: int = 40, 
-                  location_code: str = "070020", timeout: int = 60) -> list[JobItem]:
-    """搜索猎聘岗位"""
-    if not api_key:
-        from dotenv import load_dotenv
-        import os as _os
-        env_path = BASE_DIR / "config" / ".env"
-        load_dotenv(env_path)
-        api_key = _os.getenv("SCRAPING_API_KEY", "")
-        if not api_key:
-            logger.error("未设置 SCRAPING_API_KEY")
-            return []
-
-    url = f"https://www.liepin.com/zhaopin/?key={keyword}&dqs={location_code}"
-    params = {"api_key": api_key, "url": url}
-    
-    logger.info(f"猎聘搜索: {keyword}")
+    Returns:
+        [{"title": "", "company": "", "salary": "", "location": "", "url": "",
+          "experience": "", "education": "", "platform": "liepin"}, ...]
+    """
     try:
-        resp = requests.get(SCRAPINGFISH_API, params=params, timeout=timeout)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.warning(f"API 请求失败: {e}")
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        logger.error("Playwright 未安装")
         return []
 
-    return _parse_listings(resp.text)
-
-
-def _parse_listings(html: str) -> list[JobItem]:
-    """解析猎聘搜索结果 HTML"""
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html, "html.parser")
-    items = []
-
-    links = soup.select("a[data-nick*='job-detail']")
-    logger.info(f"  找到 {len(links)} 个岗位链接")
-    
-    for link in links:
+    results = []
+    with sync_playwright() as pw:
         try:
-            text = link.get_text(strip=True)
-            href = link.get("href", "")
-            if href and not href.startswith("http"):
-                href = f"https:{href}" if href.startswith("//") else href
-
-            salary = ""
-            title = text
-            location = "杭州"
-
-            sal_match = re.search(r'[\d.]+[Kk]-[\d.]+[Kk][^\s]*', text)
-            if sal_match:
-                salary = sal_match.group()
-                title = text[:sal_match.start()].strip()
-
-            loc_match = re.search(r'【([^】]+)】', text)
-            if loc_match:
-                location = loc_match.group(1)
-
-            card = link.find_parent("[data-tlg-elem-id*='job_listcard']") or link.parent
-            card_text = card.get_text(strip=True) if card else text
-            company = ""
-            parts = card_text.split(text, 1)
-            if len(parts) > 1:
-                comp = re.match(r'([^\d\u5df2\u4e0a\u674e\u5f20\u738b\u5218\u9648\u8d75\u94b1\u5b59\u5468]+)', parts[1])
-                if comp:
-                    company = comp.group(1).strip()[:40]
-
-            items.append(JobItem(
-                title=title.strip("- ").strip(),
-                company=company or "",
-                salary=salary,
-                location=location,
-                url=href,
-            ))
+            browser = pw.chromium.connect_over_cdp(cdp_url)
         except Exception as e:
-            logger.debug(f"解析失败: {e}")
+            logger.error(f"CDP连接失败: {e}")
+            return []
 
+        ctx = browser.contexts[0]
+        page = ctx.new_page()
+
+        # 拦截搜索API响应
+        captured = {"jobs": [], "total": 0}
+
+        def on_response(response):
+            if "searchfront4c.pc-search-job" in response.url and response.status == 200:
+                try:
+                    d = json.loads(response.text())
+                    if d.get("flag") == 1:
+                        inner = d.get("data", {}).get("data", {})
+                        captured["jobs"] = inner.get("jobCardList", [])
+                        captured["total"] = inner.get("totalCount", 0)
+                except Exception:
+                    pass
+
+        page.on("response", on_response)
+
+        for kw in keywords[:3]:  # 最多3个搜索词
+            logger.info(f"猎聘搜索: {kw}")
+            url = f"https://www.liepin.com/zhaopin/?city=杭州&key={kw}"
+            try:
+                page.goto(url, wait_until="networkidle", timeout=30000)
+                time.sleep(random.uniform(3, 5))
+            except Exception as e:
+                logger.warning(f"页面加载失败 ({kw}): {e}")
+                continue
+
+            for job_data in captured["jobs"]:
+                job = job_data.get("job", {})
+                comp = job_data.get("comp", {})
+
+                results.append({
+                    "title": job.get("title", ""),
+                    "company": comp.get("compName", ""),
+                    "salary": job.get("salary", ""),        # ← 明文！
+                    "location": job.get("dq", ""),
+                    "url": job.get("link", ""),
+                    "experience": job.get("requireWorkYears", ""),
+                    "education": job.get("requireEduLevel", ""),
+                    "platform": "liepin",
+                })
+
+            if len(results) >= max_results:
+                break
+
+            time.sleep(random.uniform(5, 10))  # 关键词间休息
+
+        try:
+            page.close()
+        except Exception:
+            pass
+
+    # 去重
     seen = set()
     unique = []
-    for item in items:
-        if item.url not in seen:
-            seen.add(item.url)
-            unique.append(item)
-    
-    logger.info(f"  解析到 {len(unique)} 个岗位")
-    return unique
+    for r in results:
+        if r["url"] and r["url"] not in seen:
+            seen.add(r["url"])
+            unique.append(r)
+    logger.info(f"猎聘搜索完成: {len(unique)} 个岗位 (去重后)")
+    return unique[:max_results]
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    items = search_liepin("财务产品经理")
-    for i, item in enumerate(items[:10], 1):
-        print(f"[{i}] {item.title} @ {item.company} | {item.salary or '-'}")
+def get_detail(url: str, cdp_url: str = "http://localhost:9222") -> dict:
+    """获取猎聘岗位详情页JD文本"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {"jd_text": "", "url": url}
+
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.connect_over_cdp(cdp_url)
+        except Exception:
+            return {"jd_text": "", "url": url}
+
+        ctx = browser.contexts[0]
+        page = ctx.new_page()
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            time.sleep(3)
+
+            jd_text = page.evaluate("""() => {
+                const sels = ['.job-detail-box', '.job-description', '.content-word',
+                              '[class*=\"description\"]', '[class*=\"detail\"]',
+                              '.job-intro', '.require', 'main'];
+                for (const sel of sels) {
+                    const el = document.querySelector(sel);
+                    if (el && el.innerText.length > 100) return el.innerText.trim();
+                }
+                return document.body ? document.body.innerText.substring(0, 3000) : '';
+            }""")
+            return {"jd_text": jd_text or "", "url": url}
+        except Exception as e:
+            logger.warning(f"猎聘详情获取失败: {e}")
+            return {"jd_text": "", "url": url}
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
