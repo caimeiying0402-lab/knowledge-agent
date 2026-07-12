@@ -33,6 +33,7 @@ from skills.interest_profile_skill import extract_profile
 from skills.career_goal_skill import extract_career_goals
 from skills.internal_recommendation_skill import score_candidates, select_top_k, generate_reasons
 from skills.delivery_skill import (
+    notify,
     notify_desktop,
     notify_internal_recommendations,
     save_internal_recommendations,
