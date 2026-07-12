@@ -1,7 +1,9 @@
-"""Job Agent 主控 — 搜索 → 匹配 → TOP3 → 简历定制"""
+"""Job Agent 主控 — 简历解析 → 搜索 → 匹配 → TOP3 → 简历定制"""
 import argparse
 import sys
 import logging
+import json
+import time as _time
 from pathlib import Path
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
@@ -164,7 +166,7 @@ def cmd_search_only(args):
     scored = []
     for i, d in enumerate(details):
         if d.jd_text:
-            result = match(resume, d.jd_text)
+            result = match(personal_info, d.jd_text)
             score = result.get("score", 0)
             scored.append((score, d, result))
         else:
@@ -229,7 +231,6 @@ def cmd_search_only(args):
     print(f"     定制: {len(customized)} 份简历+打招呼")
 
     # ═══ 保存到文件 ═══
-    import time as _time
     output_dir = BASE_DIR / "data" / "job_output"
     output_dir.mkdir(parents=True, exist_ok=True)
     ts = _time.strftime("%Y%m%d_%H%M%S")
@@ -305,6 +306,77 @@ def cmd_search_only(args):
     return 0
 
 
+def cmd_parse_resume(args):
+    """解析简历文件（PDF/文本）→ 结构化JSON"""
+    from skills.resume_skill import parse_resume
+
+    source = args.parse_resume
+    if not source:
+        print("❌ 请指定简历文件路径: --parse-resume <path>")
+        return 1
+
+    path = Path(source)
+    if not path.exists():
+        print(f"❌ 文件不存在: {source}")
+        return 1
+
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        source_type = "pdf"
+    elif ext in (".txt", ".md", ".markdown", ""):
+        source_type = "text"
+    else:
+        print(f"❌ 不支持的文件格式: {ext}（支持 .pdf / .txt / .md）")
+        return 1
+
+    print(f"📄 正在解析简历: {path.name}")
+    print(f"   格式: {source_type}")
+    print(f"   大小: {path.stat().st_size:,} bytes")
+    print()
+
+    try:
+        if source_type == "text":
+            raw_text = path.read_text(encoding="utf-8")
+        else:
+            raw_text = source
+        result = parse_resume(raw_text, source_type=source_type)
+    except Exception as e:
+        print(f"❌ 解析失败: {e}")
+        return 1
+
+    # 输出 JSON 文件
+    output_dir = BASE_DIR / "data" / "job_output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = _time.strftime("%Y%m%d_%H%M%S")
+    output_path = output_dir / f"resume_parsed_{ts}.json"
+    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 打印摘要
+    personal = result.get("personal", {})
+    competencies = result.get("core_competencies", {})
+    experience = result.get("work_experience", [])
+    education = result.get("education", {})
+
+    print("=" * 60)
+    print("  ✅ 简历解析完成")
+    print("=" * 60)
+    print(f"  姓名:     {personal.get('name') or '(未提取)'}")
+    print(f"  目标岗位: {', '.join(personal.get('target_role', [])) or '(未提取)'}")
+    print(f"  工作年限: {personal.get('years_of_experience') or '(未提取)'}")
+    print(f"  行业:     {personal.get('current_industry') or '(未提取)'}")
+    print(f"  地点:     {personal.get('target_location') or '(未提取)'}")
+    print(f"  学历:     {education.get('degree', '')} {education.get('major', '')} {education.get('school', '')}")
+    print(f"  工作经历: {len(experience)} 段")
+    for exp in experience:
+        print(f"    • {exp.get('company', '?')} — {exp.get('role', '?')} ({exp.get('period', '?')})")
+    print(f"  领域知识: {len(competencies.get('domain_knowledge', []))} 项")
+    print(f"  AI能力:   {len(competencies.get('ai_expertise', []))} 项")
+    print(f"  产品技能: {len(competencies.get('product_skills', []))} 项")
+    print(f"\n  📁 输出文件: {output_path}")
+    print("=" * 60)
+    return 0
+
+
 def cmd_stats(args):
     db_path = BASE_DIR / "data" / "job_tracker.db"
     print("📊 投递统计功能将在 Phase 3 实现")
@@ -328,10 +400,14 @@ def main():
                         help="搜索平台 (默认 boss)")
     parser.add_argument("--stats", action="store_true", help="查看历史投递记录")
     parser.add_argument("--jd-file", type=str, help="从文件读取JD文本")
+    parser.add_argument("--parse-resume", type=str, default=None,
+                        help="解析简历文件（PDF/TXT/MD）→ 结构化JSON")
 
     args, remaining = parser.parse_known_args()
 
-    if args.stats:
+    if args.parse_resume:
+        return cmd_parse_resume(args)
+    elif args.stats:
         return cmd_stats(args)
     elif args.schedule:
         print("⏰ 定时调度功能将在 Phase 4 实现")

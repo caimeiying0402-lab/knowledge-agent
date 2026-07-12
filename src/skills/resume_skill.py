@@ -1,6 +1,7 @@
 """简历结构化解析 — 读取PDF/文本 → DeepSeek提取结构化JSON"""
 import json
 import logging
+import os
 from pathlib import Path
 import pdfplumber
 from models.deepseek_client import chat
