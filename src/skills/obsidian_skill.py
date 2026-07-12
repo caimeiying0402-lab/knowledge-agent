@@ -18,6 +18,7 @@ def write_to_vault(record: dict) -> Path | None:
     title = record.get("title", "未命名")[:80]
     category = record.get("category", "其他")
     content = record.get("full_content", "")
+    raw_content = record.get("raw_content", "")
     tags = record.get("tags", [])
     source = record.get("source_type", "")
     source_path = record.get("source_path", "")
@@ -32,6 +33,11 @@ def write_to_vault(record: dict) -> Path | None:
     file_dir = VAULT_DIR / safe_cat
     file_dir.mkdir(parents=True, exist_ok=True)
     filepath = file_dir / filename
+
+    # 正文：优先 structured note，如果和原文不同则附上原文
+    body = content
+    if raw_content and raw_content.strip() != content.strip():
+        body += "\n\n---\n## 📄 原文\n\n" + raw_content[:5000]
 
     # YAML frontmatter + 内容
     tag_list = "\n".join(f"  - {t}" for t in tags)
@@ -48,7 +54,7 @@ created: "{time.strftime('%Y-%m-%d %H:%M', time.localtime(created / 1000)) if cr
 
 # {title}
 
-{content}
+{body}
 """
     filepath.write_text(frontmatter, encoding="utf-8")
     logger.info(f"Obsidian 写入: {filepath}")

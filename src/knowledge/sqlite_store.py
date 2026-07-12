@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     title TEXT NOT NULL,
     summary TEXT,
     full_content TEXT,
+    raw_content TEXT,
     highlights TEXT,
     tags TEXT,
     category TEXT,
@@ -119,9 +120,20 @@ def init_db(db_path: str = None) -> sqlite3.Connection:
     """初始化数据库（创建表结构），幂等"""
     conn = _get_conn(db_path)
     conn.executescript(DDL)
+    # 迁移：为旧数据库添加 raw_content 列
+    _migrate_add_column(conn, "knowledge_items", "raw_content", "TEXT")
     conn.commit()
     logger.info(f"SQLite 数据库已就绪: {db_path or _DB_PATH}")
     return conn
+
+
+def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
+    """安全添加列（如果不存在）"""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        logger.info(f"数据库迁移: {table}.{column} 列已添加")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
 
 
 def insert_item(record: dict) -> bool:
@@ -134,9 +146,9 @@ def insert_item(record: dict) -> bool:
         conn.execute(
             """INSERT OR IGNORE INTO knowledge_items
                (id, source_type, source_path, title, summary, full_content,
-                highlights, tags, category, source_quality, actionable,
+                raw_content, highlights, tags, category, source_quality, actionable,
                 created_at, updated_at, embedding_status)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 record.get("id", ""),
                 record.get("source_type", ""),
@@ -144,6 +156,7 @@ def insert_item(record: dict) -> bool:
                 record.get("title", ""),
                 record.get("summary", ""),
                 record.get("full_content", ""),
+                record.get("raw_content", ""),
                 json.dumps(record.get("highlights", []), ensure_ascii=False),
                 json.dumps(record.get("tags", []), ensure_ascii=False),
                 record.get("category", ""),
@@ -158,6 +171,53 @@ def insert_item(record: dict) -> bool:
         return True
     except Exception as e:
         logger.warning(f"SQLite 写入失败: {e}")
+        return False
+
+
+def upsert_item(record: dict) -> bool:
+    """插入或更新一条知识记录（按 id 匹配）。
+    用于飞书同步：已存在的记录更新内容，新记录插入。
+    """
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO knowledge_items
+               (id, source_type, source_path, title, summary, full_content,
+                raw_content, highlights, tags, category, source_quality, actionable,
+                created_at, updated_at, embedding_status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+               source_type=excluded.source_type,
+               source_path=excluded.source_path,
+               title=excluded.title,
+               summary=excluded.summary,
+               full_content=excluded.full_content,
+               raw_content=excluded.raw_content,
+               category=excluded.category,
+               tags=excluded.tags,
+               updated_at=excluded.updated_at""",
+            (
+                record.get("id", ""),
+                record.get("source_type", ""),
+                record.get("source_path", ""),
+                record.get("title", ""),
+                record.get("summary", ""),
+                record.get("full_content", ""),
+                record.get("raw_content", ""),
+                json.dumps(record.get("highlights", []), ensure_ascii=False),
+                json.dumps(record.get("tags", []), ensure_ascii=False),
+                record.get("category", ""),
+                record.get("source_quality", ""),
+                1 if record.get("actionable") else 0,
+                record.get("created_at", 0),
+                record.get("created_at", 0),
+                1 if record.get("embedding_status") else 0,
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"SQLite upsert 失败: {e}")
         return False
 
 
@@ -178,6 +238,16 @@ def update_item(record_id: str, updates: dict) -> bool:
     except Exception as e:
         logger.warning(f"SQLite 更新失败: {e}")
         return False
+
+
+def get_item_by_source_path(pattern: str) -> dict | None:
+    """按 source_path 模糊匹配查找记录（用于飞书同步去重）"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM knowledge_items WHERE source_path LIKE ? LIMIT 1",
+        (f"%{pattern}%",),
+    ).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 def get_item(record_id: str) -> dict | None:

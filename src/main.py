@@ -60,6 +60,7 @@ def process(source: str) -> dict:
         "title": summary_result.get("title", ""),
         "summary": summary_result.get("summary", ""),  # 飞书中隐藏，仅供调试
         "full_content": full_content,
+        "raw_content": raw_content,  # 保留原始文本，用于回顾展示
         "highlights": summary_result.get("highlights", []),  # 已内嵌到 structured_note
         "tags": summary_result.get("tags", []),
         "category": summary_result.get("category", ""),

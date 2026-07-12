@@ -1,0 +1,10 @@
+# 飞书文档自动同步 — 把要监控的文档/表格链接填在下面即可
+# 文档: https://xxx.feishu.cn/docx/xxxxx  或  https://my.feishu.cn/wiki/xxxxx
+# 表格: https://my.feishu.cn/base/xxxxx
+# 文件夹: https://xxx.feishu.cn/drive/folder/xxxxx
+
+sources:
+  - url: "https://my.feishu.cn/wiki/HBapwWqmZiQPvkkTr4kci6fKnse"
+  - url: "https://my.feishu.cn/wiki/NS5jw5ROaiaqCzkUW18c0YV2n7d"
+  - url: "https://my.feishu.cn/wiki/RA8DwFXVMii1ABk9RNac6Qggnpc"
+  - url: "https://my.feishu.cn/base/PppsbADLlaneZVs6tUrcPfg2nef"
