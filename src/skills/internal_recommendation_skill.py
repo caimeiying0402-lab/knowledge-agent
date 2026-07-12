@@ -231,11 +231,49 @@ def generate_reasons(items: list[dict], career_goals: dict) -> list[dict]:
 # ── 内部函数 ──
 
 def _compute_vector_scores(candidates: list[dict], query_text: str) -> dict[str, float]:
-    """用 ChromaDB 或 SQLite 关键词搜索计算候选条目与兴趣画像的相似度"""
+    """多维度 RAG 评分：用画像中的多个 rag_dimensions 分别检索，加权融合"""
     scores = {}
     if not query_text:
         return scores
 
+    # 尝试加载多维度画像
+    try:
+        from skills.keyword_profile_skill import load_rag_dimensions
+        dimensions = load_rag_dimensions()
+    except Exception:
+        dimensions = []
+
+    if not dimensions:
+        # 降级：单查询
+        return _single_vector_search(candidates, query_text)
+
+    # 多维度检索 + 加权融合
+    from knowledge.rag_retriever import hybrid_search
+    dim_scores = {}
+    for dim in dimensions:
+        dim_name = dim.get("name", "")
+        dim_query = dim.get("query", "")
+        dim_weight = dim.get("weight", 0.25)
+        try:
+            results = hybrid_search(dim_query, top_k=min(30, len(candidates)))
+            for r in results:
+                rid = r.get("id", "")
+                sim = r.get("similarity_score", 0) or 0
+                if rid not in dim_scores:
+                    dim_scores[rid] = []
+                dim_scores[rid].append(sim * dim_weight)
+        except Exception as e:
+            logger.debug(f"维度 '{dim_name}' 检索失败: {e}")
+
+    for rid, weighted_sims in dim_scores.items():
+        scores[rid] = round(sum(weighted_sims), 4)
+
+    return scores
+
+
+def _single_vector_search(candidates: list[dict], query_text: str) -> dict[str, float]:
+    """降级：单查询向量检索"""
+    scores = {}
     try:
         from knowledge.rag_retriever import hybrid_search
         results = hybrid_search(query_text, top_k=min(30, len(candidates)))
@@ -246,7 +284,6 @@ def _compute_vector_scores(candidates: list[dict], query_text: str) -> dict[str,
                 scores[rid] = sim
     except Exception as e:
         logger.warning(f"向量检索失败: {e}")
-
     return scores
 
 

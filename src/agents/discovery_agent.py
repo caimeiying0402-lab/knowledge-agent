@@ -91,22 +91,34 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
     logger.info("开始知识发现周期")
 
     # 1. 提取兴趣画像
-    logger.info("[1/6] 分析知识库兴趣画像...")
-    profile = extract_profile()
-    logger.info(f"  主要兴趣: {[i['category'] for i in profile.get('top_interests', [])]}")
-    logger.info(f"  偏好分类: {profile.get('preferred_categories', [])}")
-    logger.info(f"  知识盲区: {profile.get('knowledge_gaps', [])}")
+    logger.info("[1/6] 加载兴趣关键词画像...")
+    try:
+        from skills.keyword_profile_skill import load_profile, load_search_queries
+        kw_profile = load_profile()
+        logger.info(f"  摘要: {kw_profile.get('summary', '')[:80]}")
+        logger.info(f"  关键词: {[k['term'] for k in kw_profile.get('keywords', [])[:8]]}")
+    except Exception:
+        kw_profile = None
 
-    # 1.5 加载缺口信号（来自 Recommendation Agent）
+    # 1.5 加载缺口信号
     gap_queries = []
     if use_gap_signals:
         gap_queries = _load_gap_signals()
         if gap_queries:
             logger.info(f"  已加载 {len(gap_queries)} 个缺口搜索词")
 
-    # 2. 生成搜索词
-    logger.info("[2/6] 生成搜索词...")
-    queries = _generate_search_queries(profile)
+    # 2. 获取搜索词（优先用画像中的，降级用旧方法）
+    logger.info("[2/6] 获取搜索词...")
+    if kw_profile:
+        queries = load_search_queries()
+        if queries:
+            logger.info(f"  从画像获取 {len(queries)} 个搜索词")
+        else:
+            profile = extract_profile()
+            queries = _generate_search_queries(profile)
+    else:
+        profile = extract_profile()
+        queries = _generate_search_queries(profile)
     queries.extend(gap_queries)
     if gap_queries:
         logger.info(f"  追加缺口搜索词: {gap_queries}")
