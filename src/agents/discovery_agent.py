@@ -113,6 +113,7 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
     logger.info("[2/6] 获取搜索词...")
     if kw_profile:
         queries = load_search_queries()
+        profile = None  # 后续评分使用 kw_profile 信息
         if queries:
             logger.info(f"  从画像获取 {len(queries)} 个搜索词")
         else:
@@ -153,6 +154,8 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
 
     # 4. AI 评分
     logger.info(f"[4/6] AI 相关性评分...")
+    if profile is None:
+        profile = extract_profile()  # 确保有 profile 做评分
     scored = score_results(profile, search_results)
     logger.info(f"  评分≥60: {len(scored)} 条")
 
