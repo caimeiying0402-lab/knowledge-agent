@@ -1,326 +1,246 @@
-# Personal AI OS — 架构设计（已实现状态）
+# Personal AI OS — 架构设计
 
-> 最后更新：2026-07-01
-> 反映代码实际运行状态，非计划状态。
+> 最后更新：2026-07-12
+> 反映代码实际运行状态。
 
 ---
 
 ## 一、系统定位
 
-Personal AI OS = 多 Agent 协作系统。当前阶段：Knowledge Agent 主线。
-
-**业务目的：** 将个人碎片化信息（微信消息、网页、图片、链接）自动采集、AI 提炼、结构化存储、可随时检索，构建个人知识库。
+Personal AI OS = 多 Agent 协作系统。六层架构，~45% 完成。
 
 | Agent | 定位 | 状态 |
 |-------|------|------|
-| Knowledge Agent | 多端采集 → AI 处理 → 结构化知识库 → 可检索 | 🟢 主线已完工 |
-| Job Agent | 简历 × JD 匹配 | ⬜ 下一阶段 |
-| 自动记账 Agent | ~~账单 → 随手记~~ | ❌ 已取消/延期 |
-| Rule Mining Agent | 规则挖掘 + 推荐 | ⬜ 未启动 |
+| Knowledge Agent | 多端采集 → AI 处理 → 结构化知识库 | 🟢 已完工 |
+| Career Agent | 简历解析 + JD 匹配 + 全链路投递 | 🟢 已完工 |
+| Discovery Agent | 全网搜索发现新内容 | 🟡 已部署但搜索待修 |
+| Recommendation Agent | 知识库内部智能推荐 | 🔴 代码完成但未部署 |
+| 自动记账 Agent | 已取消/延期 | ❌ |
 
 ---
 
-## 二、云端 vs 本地：为什么 Mac 必须开机才能处理图片
-
-### 云端负责（7×24，Mac 关机也可）
-
-| 环节 | 运行位置 | 说明 |
-|------|---------|------|
-| 企微回调接收 | Cloudflare Worker | 接收企微推送的 POST 请求 |
-| 签名验证 | Cloudflare Worker | SHA1 校验 msg_signature |
-| AES-256-CBC 解密 | Cloudflare Worker | Web Crypto API + 纯 JS fallback |
-| 消息入库 | Cloudflare D1 | 文字/链接/图片元数据存 D1，排队等待处理 |
-| 图片下载 | Cloudflare Worker → R2 | 企微图片 media_id 3 天过期，Worker 收到后立即下载到 R2 永久保存 |
-
-### 本地负责（Mac 开机时执行）
-
-| 环节 | 运行位置 | **为什么必须在 Mac？** |
-|------|---------|----------------------|
-| 图片 OCR | Mac Python + PaddleOCR | Cloudflare Worker 只能跑 JS，**无法运行 PaddleOCR（Python 本地模型引擎，含数百 MB 模型文件）** |
-| 网页内容抓取（JS 渲染） | Mac Python + Playwright | 需要 **Chromium 浏览器实例**，Worker 无浏览器环境 |
-| AI 摘要（DeepSeek） | Mac Python | 技术上 Worker 可以调 DeepSeek API，但为保持管道一致性，统一在本地 ETL 中处理 |
-| Embedding 向量化 | Mac Python + ONNX | **本地 ONNX 模型**（all-MiniLM-L6-v2），Worker 无 ONNX 运行时 |
-| 飞书写入 | Mac Python | 飞书 API 调用，技术上 Worker 也可做，但统一在 ETL 管道处理 |
-| SQLite 写入 | Mac Python | 本地数据库文件，Worker 无法访问 Mac 文件系统 |
-| Chroma 向量写入 | Mac Python | 本地向量库文件，同上 |
-
-### 架构决策：为什么不在 Worker 端做完所有事？
+## 二、六层架构全景
 
 ```
-Worker 能做的：接收、解密、排队、图片转存 R2       → 已实现 ✅
-Worker 做不了的：OCR、浏览器渲染、ONNX embedding    → 必须 Mac
-
-文字消息虽然在 Worker 端完全可以直接调 DeepSeek + 飞书 API 完成端到端处理，但：
-  - 保持管道统一（所有 ETL 逻辑在一个地方）
-  - 避免 Worker 和 Mac 两处维护相同的 summarize/feishu 代码
-  - 图片和链接消息无论如何需要在 Mac 处理，分两条路径徒增复杂度
+Layer 6: 推荐层 (Recommendation)     ← 五维打分 + MMR，未部署
+Layer 5: 学习层 (Learning)          ← Discovery 全网发现，待修
+Layer 4: Agent 层                   ← Knowledge ✅ Career ✅
+Layer 3: 知识层 (Knowledge)         ← SQLite 50条 + Chroma + RAG
+Layer 2: 处理层 (Processing)        ← OCR + Summary + 19分类
+Layer 1: 采集层 (Ingestion)         ← 企微 Worker → 本地 ETL
 ```
 
 ---
 
-## 三、Knowledge Agent — 完整架构
+## 三、Knowledge Agent — 数据采集与处理（Layer 1-3）
 
 ### 3.1 全链路数据流
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        云端（Cloudflare，7×24）                       │
-│                                                                      │
-│  企微消息 ──→ Worker 接收 ──→ 签名验证 ──→ AES解密 ──→ D1 排队      │
-│                              （文字/链接/图片）         │             │
-│                                   │                     │             │
-│                              图片有media_id              │             │
-│                                   │                     │             │
-│                              Worker下载 → R2存储         │             │
-│                              （绕过3天过期）              │             │
-└──────────────────────────────────┬───────────────────────────────────┘
-                                   │
-                                   │  Mac 开机时触发
-                                   ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                    Mac 本地（cloud_sync_skill.py）                     │
-│                                                                      │
-│  拉取 D1 pending 消息 ──→ 按类型分发                                  │
-│    ├─ 文字 ──→ URL检测？──→ 是：ingestion抓取页面                     │
-│    │                       否：透传                                  │
-│    ├─ 图片 ──→ PaddleOCR 本地识别 ──→ 提取文字                       │
-│    └─ 链接 ──→ ingestion_skill 页面抓取                               │
-│                         │                                            │
-│                         ▼                                            │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │              ETL 管道（main.py v5）                           │    │
-│  │                                                              │    │
-│  │  1. ingest()                                                 │    │
-│  │     ├─ 平台检测（小红书/公众号/通用网页/纯文本/图片）           │    │
-│  │     ├─ requests + BS4（静态网页）                              │    │
-│  │     └─ Playwright Chromium（JS 渲染降级）                      │    │
-│  │                         │                                    │    │
-│  │  2. summarize() — DeepSeek Chat API                          │    │
-│  │     输出: title / summary / highlights / category /          │    │
-│  │           tags / source_quality / actionable                 │    │
-│  │     19 分类体系 + 平台感知 Prompt                              │    │
-│  │                         │                                    │    │
-│  │  2.5. structured_format_skill.py                             │    │
-│  │     编号层级笔记 ← DeepSeek 二次格式化                         │    │
-│  │     每条 ≤80 字，零废话，原文不篡改                             │    │
-│  │                         │                                    │    │
-│  │  3. 三写存储                                                │    │
-│  │     ├─ 飞书多维表格（主展示，结构化笔记）                        │    │
-│  │     ├─ SQLite data/knowledge.db（本地真相源）                  │    │
-│  │     └─ Chroma data/chroma_db/（向量检索，ONNX embedding）      │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────────┘
+云端（7×24）:
+  企微消息 → CF Worker(解密+排队) → D1数据库 → R2图片存储
+
+本地（Mac 开机）:
+  cloud_sync 拉取 → 按类型分发 → ETL管道 → 三写存储
 ```
 
-### 3.2 各环节：技术架构 + 业务目的
+### 3.2 消息入口
 
-#### 环节 1：消息接收（Cloudflare Worker）
-
-**文件：** `cloudflare-worker/src/index.ts` (v9)
-
-| 维度 | 说明 |
-|------|------|
-| **业务目的** | 7×24 接收企微消息，Mac 关机时消息不丢失，排队等待处理 |
-| **技术方案** | Cloudflare Worker（边缘计算，全球部署，免费额度足够） |
-| **解密方案** | AES-256-CBC：Web Crypto API 优先，纯 JS 实现兜底（绕过企微非标准空格填充） |
-| **签名验证** | SHA1(msg_token + timestamp + nonce + encrypt 排序拼接) |
-| **图片处理** | 收到 media_id → 调企微 API 下载 → 存 R2（绕过 3 天过期限制） |
-| **自定义域名** | `wechat.happymia.top`（workers.dev 国内不可达，绑定自定义域名解决） |
-| **路由** | `/wechat/callback` GET(验证) POST(接收) / `/api/pending` / `/api/processed` / `/api/stats` / `/api/image/:key` / `/health` |
-| **认证** | 企微回调：签名验证 / 同步 API：Bearer Token |
-
-#### 环节 2：消息排队（Cloudflare D1）
-
-| 维度 | 说明 |
-|------|------|
-| **业务目的** | 解耦 Worker 接收和 Mac 处理，消息不丢 |
-| **技术方案** | Cloudflare D1（边缘 SQLite，免费 5GB 存储 / 5M 行查询/月） |
-| **表结构** | messages(id, msg_type, from_user, content, url, title, description, media_id, image_r2_key, created_at, processed, processed_at) |
-| **查询** | `SELECT * WHERE processed=0 ORDER BY id ASC`（FIFO） |
-
-#### 环节 3：图片暂存（Cloudflare R2）
-
-| 维度 | 说明 |
-|------|------|
-| **业务目的** | 企微临时 media_id 3 天过期，Worker 收到后立即下载到 R2 保证图片不丢 |
-| **技术方案** | Cloudflare R2（S3 兼容对象存储，10GB 免费） |
-| **Key 命名** | `wechat_{media_id}.jpg` |
-
-#### 环节 4：本地同步（cloud_sync_skill.py）
-
-**文件：** `src/skills/cloud_sync_skill.py`
-
-| 维度 | 说明 |
-|------|------|
-| **业务目的** | Mac 开机后将 D1 排队消息拉取到本地，分类型处理（文字/图片/链接） |
-| **技术方案** | HTTP 拉取 Worker API → 按消息类型分发 → 调 ETL 管道 |
-| **图片处理** | 优先从 R2 下载（永久保存），失败则降级调企微 API（3 天内有效） |
-| **URL 展开** | 文字中检测到 URL → 自动调 ingestion_skill 抓取页面正文 |
-| **重试机制** | 指数退避，3 次重试，5xx 重试 4xx 不重试 |
-| **轮询模式** | 单次（`sync_once`）或循环（`--loop`，智能：有消息 30s / 空闲 60s） |
-
-#### 环节 5：内容采集（ingestion_skill.py + browser_skill.py）
-
-**文件：** `src/skills/ingestion_skill.py`、`src/skills/browser_skill.py`
-
-| 维度 | 说明 |
-|------|------|
-| **业务目的** | 从各种来源获取正文内容（网页/图片/文本） |
-| **通用网页** | requests + BeautifulSoup4 → 提取正文 |
-| **小红书** | 方式1: `__INITIAL_STATE__` JSON 解析 → 方式2: CSS 选择器 → 方式3: Playwright 渲染降级 |
-| **公众号** | HTML 解析 → og:metadata 降级 → Playwright 渲染降级 |
-| **图片 OCR** | PaddleOCR 本地引擎（中文识别，零 API 成本） |
-| **浏览器渲染** | Playwright Chromium 单例复用，iPhone User-Agent，移动端视口 |
-| **为什么必须本地？** | PaddleOCR = Python 本地模型（数百 MB）。Playwright = Chromium 浏览器进程。Cloudflare Worker 不支持。 |
-
-#### 环节 6：AI 摘要（summary_skill.py + deepseek_client.py）
-
-**文件：** `src/skills/summary_skill.py`、`src/models/deepseek_client.py`
-
-| 维度 | 说明 |
-|------|------|
-| **业务目的** | 将非结构化长文提炼为结构化元数据，支撑后续检索和展示 |
-| **技术方案** | DeepSeek Chat API（兼容 OpenAI SDK），低成本（约 ¥1/百万 token） |
-| **输出字段** | title(标题) / summary(摘要) / highlights(亮点列表) / category(19分类) / tags(标签) / source_quality(可信度) / actionable(是否可行动) |
-| **19 分类** | 个人成长 / 科技与AI / 效率方法 / 产品与工具 / 健康与心理 / 人际关系 / 美食与消费 / 职业发展 / 金融投资 / 设计审美 / 教育学习 / 娱乐休闲 / 社会观察 / 历史人文 / 自然科学 / 技术/编程 / 医学健康 / 法律 / 其他 |
-
-#### 环节 7：结构化格式化（structured_format_skill.py）
-
-**文件：** `src/skills/structured_format_skill.py` (v5 新增)
-
-| 维度 | 说明 |
-|------|------|
-| **业务目的** | 将 AI 摘要从"亮点列表"转为编号层级笔记，方便飞书阅读 |
-| **技术方案** | DeepSeek Chat API 二次格式化（temperature=0.1，减少创造） |
-| **输出规则** | 层级编号（1. → 1.1 → 1.2）/ 每条 ≤80 字 / 禁止"这是""核心""值得"等元描述词 / 原文事实不篡改 |
-| **输入** | 原文优先（≤3000 字）→ AI 摘要（参考）→ 候选亮点（参考） |
-| **降级** | DeepSeek 调用失败时用原文摘要+亮点简单拼接 |
-
-#### 环节 8：三写存储
-
-| 存储 | 文件 | 业务目的 | 技术方案 |
-|------|------|---------|---------|
-| 飞书多维表格 | `src/skills/feishu_skill.py` | **主展示层**，人在飞书里看笔记 | tenant_access_token → bitable API → 11 字段记录 |
-| SQLite | `src/knowledge/sqlite_store.py` + `src/skills/sqlite_skill.py` | **本地真相源**，离线可用，不受飞书 API 限制 | Python sqlite3，全文搜索（LIKE），按分类/标签/来源查询 |
-| Chroma 向量库 | `src/knowledge/chroma_store.py` + `src/skills/embedding_skill.py` | **语义检索**，支持"相似内容"查询 | ChromaDB 持久化 + ONNX all-MiniLM-L6-v2 embedding（macOS x86_64 兼容，零 PyTorch 依赖） |
-
-### 3.3 消息入口矩阵
-
-| 入口 | 技术方案 | 消息类型 | 定位 | 状态 |
-|------|---------|---------|------|------|
-| 企微自建应用 | Cloudflare Worker + D1 + R2 + cloud_sync | 文字/链接/图片 | **主采集端** | ✅ 全链路 |
-| 微信客服轮询 | sync_msg API 轮询 | 文字/链接/图片 | 备用入口（个人微信） | ⚠️ 45009 限流 |
-| 手动 CLI | `python main.py` / 文件路径 / URL | 文本/URL/文件 | 调试/批量导入 | ✅ |
-
-> iCloud + 快捷指令链路已移除（2026-06-28）。企微是唯一采集端。
-
-### 3.4 平台抓取能力
-
-| 平台 | 方案 | 状态 |
+| 入口 | 方案 | 状态 |
 |------|------|------|
-| 通用网页 | requests + BS4 | ✅ |
-| 小红书 | INITIAL_STATE + CSS + Playwright 三级降级 | ✅ |
-| 公众号 | HTML + `og:metadata` + Playwright 三级降级 | ✅ |
-| 图片 | PaddleOCR 本地识别（中文优化） | ✅ |
+| 企微自建应用 | CF Worker + D1 + R2 | ✅ 主采集端 |
+| 微信客服 | sync_msg API 轮询 | ⚠️ 限流 |
+| 手动 CLI | python main.py | ✅ |
+
+### 3.3 ETL 管道
+
+```
+ingestion(采集) → summarize(DeepSeek摘要) → structured_format(层级笔记)
+                                            ↓
+                              ┌─────────────┼─────────────┐
+                              ▼             ▼             ▼
+                          飞书表格       SQLite(50条)   Chroma向量库
+```
+
+### 3.4 知识库存储
+
+| 存储 | 条数 | 用途 |
+|------|------|------|
+| SQLite knowledge.db | **50 条** | 本地真相源 |
+| ChromaDB (ONNX embedding) | **42 条向量** | 语义检索 (384维) |
+| 飞书多维表格 | **16 条** | 主展示层 |
+
+**数据来源分布**：text(32) / file(12) / generic(6)
+
+**分类分布**：科技与AI(11) > 职场与创业(10) > 个人成长(8) > 效率方法(6) > 健康与心理(5) > 产品与工具(3) > 其他
 
 ---
 
-## 四、Job Agent（当前阶段 🚧）
+## 四、Career Agent — 求职匹配（Layer 4）
 
-> 业务目的：简历 × 岗位 JD 自动匹配评分，每日定时推送高匹配岗位，辅助求职决策
-> 
-> 完整开发规格书：`docs/JOB_AGENT_SPEC.md`
-> 简历数据文件：`src/agents/resume_profile.json`
+### 4.1 功能
 
-### 4.1 完整架构
-
-```
-src/agents/career_agent.py              ← 主控调度
-  ├─ src/skills/resume_skill.py         ← 简历PDF解析 → 结构化JSON
-  ├─ src/skills/job_search_skill.py     ← BOSS直聘/猎聘 Playwright搜索+反爬
-  ├─ src/skills/match_skill.py          ← DeepSeek 匹配评分 0-100
-  ├─ src/skills/resume_generator_skill.py ← 针对岗位定制简历
-  ├─ src/skills/greeting_skill.py       ← 个性化打招呼语
-  ├─ src/skills/delivery_skill.py       ← 企微应用消息推送
-  └─ src/knowledge/job_store.py         ← SQLite去重+投递记录
-```
-
-### 4.2 核心链路
-
-```
-定时触发(cron/launchd 或手动)
-       │
-       ▼
-job_search_skill ──→ BOSS直聘/猎聘搜索 ──→ JD列表
-  (Playwright+反爬)    (按关键词"财务产品经理"等)
-       │
-       ▼
-硬性筛选: 地域=杭州 / 年限=5-10年 / 薪资=40-60K月或70W+年 / 关键词匹配
-       │
-       ▼
-match_skill ──→ 简历 × 每个JD ──→ 匹配分0-100 + 维度分解
-  (DeepSeek API)
-       │
-       ▼
-Top 3 排序 → 去重检查(SQLite job_url)
-       │
-       ├─→ resume_generator_skill ──→ 针对岗位定制简历
-       ├─→ greeting_skill        ──→ 个性化打招呼语
-       └─→ delivery_skill        ──→ 企微卡片消息推送
-                                        │
-                                  用户决定是否投递
-                                        │
-                                   job_store 记录留痕
-```
-
-### 4.3 搜索条件
-
-| 条件 | 值 |
-|------|-----|
-| 工作年限 | 5-10年 |
-| 薪资(月薪) | 40-60K |
-| 薪资(年薪) | 70W+ |
-| 地域 | 杭州 |
-| 岗位类型 | 产品经理 |
-| 关键词 | 财务产品经理、财税产品经理、ERP、财务共享、数据分析、风控、报表、业财一体、费控、企业服务 |
-
-### 4.4 反爬虫策略
-
-```
-Level 1: stealth.js 注入 (隐藏webdriver/navigator指纹)
-Level 2: 行为模拟 (随机延迟3-8s, 人类鼠标轨迹, 随机滚动)
-Level 3: Cookie/Session 持久化 (首次扫码登录, 保存storage_state)
-Level 4: 降级机制 (连续失败3次→通知用户→切换手动/晚9点模式)
-```
-
-### 4.5 推送格式
-
-企微卡片消息：标题含岗位+公司+匹配分 / 描述含薪资+地点+JD摘要+匹配点 / 点击跳BOSS原始链接
-
-### 4.6 去重
-
-SQLite `data/job_tracker.db`，以 `job_url` 为唯一键，同岗位不重复推送。
-
-### 4.7 实现阶段
-
-| 阶段 | 内容 | 预计 |
+| 功能 | 命令 | 状态 |
 |------|------|------|
-| Phase 1 | resume_skill + match_skill + 主控 | 1-2天 |
-| Phase 2 | job_search_skill (BOSS+反爬) | 2-3天 |
-| Phase 3 | resume_generator + greeting + delivery | 1-2天 |
-| Phase 4 | 定时调度 + 降级逻辑 | 半天 |
+| 简历解析 | `bash match.sh -p 简历.pdf` | ✅ |
+| 手动JD匹配 | `bash match.sh` | ✅ |
+| 自动搜索+匹配+TOP3 | `bash match.sh --search` | ✅ |
+| 定时调度 | launchd 每天7:00 | ✅ |
+
+### 4.2 匹配引擎
+
+```
+personal_info.md (完整简历) + JD文本
+        → DeepSeek Chat API
+        → 五维评分(领域30/技能25/经验20/行业15/亮点10)
+        → 匹配点 + 差距点 + 建议
+```
+
+### 4.3 代码文件
+
+| 文件 | 功能 |
+|------|------|
+| `src/agents/career_agent.py` | 主控 (match/search/parse三种模式) |
+| `src/skills/resume_skill.py` | PDF/文本 → DeepSeek → 结构化JSON |
+| `src/skills/match_skill.py` | JD × 简历 → 0-100分 + 理由 |
+| `src/skills/job_search_skill.py` | BOSS直聘搜索 (CDP) |
+| `src/skills/liepin_search_skill.py` | 猎聘搜索 |
+| `src/skills/resume_customize_skill.py` | TOP3简历定制 |
+| `match.sh` | 一键启动脚本 |
 
 ---
 
-## 五、共享基础设施
+## 五、推荐系统（Layer 5-6）
+
+### 5.1 双 Agent 架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                Discovery Agent (Layer 5)                 │
+│         兴趣画像 → 搜索词生成 → 全网搜索 → 评分 → 推送    │
+│         外部发现：从互联网找新内容                          │
+│         调度: 每天 6:00 / 18:00                          │
+│         状态: 🔴 搜索模块故障，待修                         │
+└────────────────────────────┬────────────────────────────┘
+                             │ 知识缺口信号
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│              Recommendation Agent (Layer 6)              │
+│   知识库→五维打分→MMR精选→生成推荐理由→桌面通知           │
+│   内部推荐：从已有知识库选 TOP 5                          │
+│   调度: 每天 8:00                                        │
+│   状态: 🔴 代码完成但 launchd 未安装                      │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 5.2 Discovery Agent 流程
+
+```
+[1/6] 兴趣画像提取: DeepSeek 扫描知识库50条 → 输出兴趣JSON
+[2/6] 搜索词生成:   DeepSeek 基于画像生成搜索查询
+[3/6] 全网搜索:     DuckDuckGo + Bing → 去重
+[4/6] AI评分:       DeepSeek 评估每篇与画像的相关性
+[5/6] 去重:         SQLite 检查是否已推荐过
+[6/6] 推送:         桌面通知 / 保存到数据库
+```
+
+**已知问题**：
+- DeepSeek API 凌晨超时 → 降级为 "分类名 + 最新资讯 2026"
+- DuckDuckGo 包已改名 ddgs，Bing 爬虫返回空
+- 整个历史仅发现 1 条有效内容
+
+### 5.3 Recommendation Agent 评分算法
+
+```
+FINAL_SCORE = 0.40 × 内容相似度(ChromaDB向量)
+            + 0.30 × 职业加权(DeepSeek评估)
+            + 0.15 × 时间新鲜度(e^{-0.01×days})
+            - 0.10 × 互动惩罚(已跳过/已喜欢)
+            + 0.05 × MMR多样性加分(贪心精选)
+```
+
+**MMR 多样性保证**：
+```
+对于每个候选: MMR = 0.7×相关性 - 0.3×与已选内容的最大相似度
+贪心选择: 逐轮挑出 MMR 最高的条目，保证类别不重复
+```
+
+**已实现但未部署**：
+- 用户反馈追踪 (liked/skipped/clicked)
+- 知识缺口分析 → 传递给 Discovery Agent
+- 推荐理由生成 (DeepSeek)
+
+### 5.4 代码文件
+
+| 文件 | 功能 |
+|------|------|
+| `src/agents/discovery_agent.py` | 外部发现主编排 |
+| `src/agents/recommendation_agent.py` | 内部推荐主编排 |
+| `src/skills/interest_profile_skill.py` | 知识库 → 兴趣画像 |
+| `src/skills/career_goal_skill.py` | 职业目标提取 |
+| `src/skills/internal_recommendation_skill.py` | 五维打分 + MMR |
+| `src/skills/recommendation_skill.py` | Discovery 评分 |
+| `src/skills/web_search_skill.py` | 全网搜索 (DuckDuckGo/Bing) |
+| `src/skills/delivery_skill.py` | 桌面通知 + 数据保存 |
+| `src/knowledge/rag_retriever.py` | RAG 语义检索 |
+| `src/knowledge/chroma_store.py` | ChromaDB 向量存储 |
+
+### 5.5 待改造项
+
+| 优先级 | 事项 |
+|--------|------|
+| P0 | 修复 Discovery 搜索 (DuckDuckGo→ddgs, Bing→新引擎) |
+| P0 | 安装 Recommendation Agent launchd |
+| P1 | AI 词云画像系统 (替代静态配置) |
+| P1 | 企业微信推送推荐结果 |
+| P1 | 飞书数据源读取 (表格+文档) |
+| P2 | 固定内容源配置 (RSS/豆瓣/公众号) |
+| P2 | 书籍片段推荐 |
+
+---
+
+## 六、共享基础设施
 
 | 组件 | 选型 | 说明 |
 |------|------|------|
-| AI 引擎 | DeepSeek Chat API | 兼容 OpenAI SDK，低成本 |
-| 本地 OCR | PaddleOCR | 中文识别，零 API 成本，必须 Mac |
-| 浏览器渲染 | Playwright Chromium | 单例复用，必须 Mac |
-| 消息网关 | Cloudflare Worker + D1 + R2 | 7×24 免费，Mac 离线不丢消息 |
-| 主展示 | 飞书多维表格 | 11 字段，结构化笔记展示 |
-| 本地真相源 | SQLite | 31 条，离线可用 |
-| 向量检索 | Chroma + ONNX embedding | 24 条向量化，零 PyTorch 依赖 |
-| 语言 | Python 3.12 | .venv 虚拟环境 |
+| AI 引擎 | DeepSeek Chat API | 兼容 OpenAI SDK |
+| 向量化 | ChromaDB ONNX (all-MiniLM-L6-v2, 384维) | macOS x86_64 兼容，零 PyTorch |
+| 本地 OCR | PaddleOCR | 中文识别，必须 Mac |
+| 浏览器渲染 | Playwright Chromium | 单例复用 |
+| 消息网关 | Cloudflare Worker + D1 + R2 | 7×24 免费 |
+| 主展示 | 飞书多维表格 | 结构化笔记 |
+| 本地真相源 | SQLite | data/knowledge.db |
+| 定时调度 | macOS launchd | Career(7:00) / Discovery(6:00,18:00) |
+
+---
+
+## 七、目录结构
+
+```
+knowledge-agent/
+├── src/
+│   ├── agents/          # 主编排器 (career/discovery/recommendation)
+│   ├── skills/          # 可复用技能模块 (25个)
+│   ├── knowledge/       # 存储层 (sqlite/chroma/rag)
+│   ├── models/          # AI 客户端 (deepseek)
+│   ├── web/             # Dashboard
+│   └── tests/           # 测试
+├── cloudflare-worker/   # CF Worker (企微网关)
+├── prompts/             # Prompt 模板 (10个)
+├── config/              # 配置 (.env)
+├── data/                # 数据 (knowledge.db / chroma_db / job_output)
+├── logs/                # 日志
+├── match.sh             # 岗位匹配一键启动
+├── start_wechat.sh      # 知识同步一键启动
+├── start_career_scheduled.sh  # Career 定时任务
+└── start_dashboard.sh   # Dashboard 启动
+```
+
+---
+
+## 八、GitHub 仓库
+
+| 仓库 | 用途 |
+|------|------|
+| `caimeiying0402-lab/knowledge-agent` | 全部代码 |
+| `caimeiying0402-lab/AIOS` | 共享上下文 (画像/架构/决策/待办) |
