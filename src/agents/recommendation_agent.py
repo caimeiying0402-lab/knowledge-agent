@@ -118,8 +118,7 @@ def _run_recommendation_cycle(dry_run: bool = False, count: int = 5) -> dict:
     if not dry_run:
         saved = save_internal_recommendations(selected, batch_id, "scheduled", gap_signals)
         msg = format_internal_recommendation_message(selected)
-        notify_internal_recommendations(selected)
-        notify_wecom_internal(selected)
+        notify("📚 知识库今日精选", msg)
         logger.info(f"  已保存: {saved} 条")
         record_batch_recommended(selected, batch_id, context="scheduled")
     else:

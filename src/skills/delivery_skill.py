@@ -216,29 +216,54 @@ def _get_wecom_access_token() -> str:
         return ""
 
 
-def notify_wecom_textcard(title: str, description: str, url: str = "") -> bool:
-    """发送企业微信文本卡片消息（优先通过 Worker 代理，绕过 IP 白名单）"""
-    # 方式 1: Cloudflare Worker 代理（稳定 IP，不受本地动态 IP 影响）
-    worker_url = os.getenv("CF_WORKER_URL", "")
-    sync_key = os.getenv("CF_SYNC_API_KEY", "")
-    if worker_url and sync_key:
-        try:
-            resp = requests.post(
-                f"{worker_url}/api/notify",
-                json={"title": title[:80], "description": description[:500], "url": url},
-                headers={"Authorization": f"Bearer {sync_key}"},
-                timeout=15,
-            )
-            result = resp.json()
-            if result.get("errcode") == 0:
-                logger.info(f"企微推送成功(via Worker): {title}")
-                return True
-            else:
-                logger.warning(f"Worker推送失败: {result}，降级直连")
-        except Exception as e:
-            logger.debug(f"Worker推送异常: {e}，降级直连")
+def notify_email(title: str, body: str) -> bool:
+    """发送邮件通知（通过 SMTP，不受 IP 白名单限制，最稳定）"""
+    import smtplib
+    from email.mime.text import MIMEText
 
-    # 方式 2: 直连企微 API（需要 IP 白名单）
+    smtp_host = os.getenv("SMTP_HOST", "")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER", "")
+    smtp_pass = os.getenv("SMTP_PASS", "")
+    notify_to = os.getenv("NOTIFY_EMAIL", smtp_user)
+
+    if not all([smtp_host, smtp_user, smtp_pass]):
+        logger.debug("SMTP 未配置，跳过邮件通知")
+        return False
+
+    try:
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = title
+        msg["From"] = smtp_user
+        msg["To"] = notify_to
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+
+        logger.info(f"邮件已发送: {title}")
+        return True
+    except Exception as e:
+        logger.debug(f"邮件发送失败: {e}")
+        return False
+
+
+def notify(title: str, body: str) -> bool:
+    """统一通知入口：企微优先 → 邮件兜底"""
+    # 1. 桌面通知（始终尝试）
+    notify_desktop(title, body)
+
+    # 2. 企微
+    if notify_wecom_textcard(title, body):
+        return True
+
+    # 3. 邮件兜底
+    return notify_email(title, body)
+
+
+def notify_wecom_textcard(title: str, description: str, url: str = "") -> bool:
+    """发送企业微信文本卡片消息（需要本机 IP 在企微白名单内）"""
     token = _get_wecom_access_token()
     if not token:
         return False
@@ -261,10 +286,10 @@ def notify_wecom_textcard(title: str, description: str, url: str = "") -> bool:
         )
         result = resp.json()
         if result.get("errcode") == 0:
-            logger.info(f"企微推送成功(直连): {title}")
+            logger.info(f"企微推送成功: {title}")
             return True
         else:
-            logger.warning(f"企微推送失败: {result}")
+            logger.warning(f"企微推送失败(errcode={result.get('errcode')}): {result.get('errmsg','')}")
             return False
     except Exception as e:
         logger.warning(f"企微推送异常: {e}")

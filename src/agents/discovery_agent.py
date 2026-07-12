@@ -28,6 +28,7 @@ from skills.web_search_skill import search_web, enrich_results
 from skills.recommendation_skill import score_results, deduplicate
 from skills.delivery_skill import (
     notify_desktop,
+    notify,
     save_recommendations,
     print_recommendations,
     format_recommendation_message,
@@ -169,8 +170,7 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
     if not dry_run and new_items:
         saved = save_recommendations(new_items, search_results, profile)
         msg = format_recommendation_message(new_items)
-        notify_desktop("Knowledge Agent 发现新内容", msg)
-        notify_wecom_discovery(new_items)
+        notify("Knowledge Agent 发现新内容", msg)
         logger.info(f"  已保存: {saved} 条")
     elif dry_run:
         logger.info("  [DRY RUN] 跳过保存和通知")

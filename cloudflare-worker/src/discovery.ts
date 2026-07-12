@@ -39,30 +39,25 @@ interface Profile {
   interest_summary: string;
 }
 
-export default {
-  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+export async function discoveryScheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     console.log(`[discovery] Cron triggered at ${new Date().toISOString()}`);
     ctx.waitUntil(runDiscovery(env).catch(e => console.error('[discovery] Failed:', e)));
-  },
+}
 
-  async fetch(req: Request, env: Env): Promise<Response> {
-    const url = new URL(req.url);
-    const auth = req.headers.get('Authorization') || '';
-    const apiKey = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-
-    if (url.pathname === '/api/discovery/run' && req.method === 'POST') {
-      const result = await runDiscovery(env);
-      return corsJson(result);
-    }
-    if (url.pathname === '/api/discovery/stats') {
-      return corsJson(await getStats(env));
-    }
-    if (url.pathname === '/api/discovery/profile') {
-      return corsJson(await buildProfile(env));
-    }
-    return new Response('not found', { status: 404 });
-  },
-};
+export async function discoveryFetch(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+  if (url.pathname === '/api/discovery/run' && req.method === 'POST') {
+    const result = await runDiscovery(env);
+    return corsJson(result);
+  }
+  if (url.pathname === '/api/discovery/stats') {
+    return corsJson(await getStats(env));
+  }
+  if (url.pathname === '/api/discovery/profile') {
+    return corsJson(await buildProfile(env));
+  }
+  return new Response('not found', { status: 404 });
+}
 
 // ── Main ──
 
@@ -119,37 +114,49 @@ async function runDiscovery(env: Env): Promise<any> {
 // ── Profile ──
 
 async function buildProfile(env: Env): Promise<Profile> {
-  // Count knowledge items by category
-  const rows = await env.DB.prepare(
-    `SELECT category, COUNT(*) as cnt FROM knowledge_items GROUP BY category ORDER BY cnt DESC LIMIT 10`
-  ).all();
+  // Try to get categories from knowledge_items (if synced from local)
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT category, COUNT(*) as cnt FROM knowledge_items GROUP BY category ORDER BY cnt DESC LIMIT 10`
+    ).all();
 
-  // Build profile from categories
-  const interests: Profile['top_interests'] = [];
-  for (const row of rows.results || []) {
-    const cat = (row as any).category || '其他';
-    const cnt = (row as any).cnt || 0;
-    interests.push({
-      category: cat,
-      tags: [cat],
-      weight: Math.min(100, cnt * 20),
-      reason: `知识库中有 ${cnt} 条关于 ${cat} 的内容`,
-    });
+    if (rows.results && rows.results.length > 0) {
+      const interests: Profile['top_interests'] = [];
+      for (const row of rows.results) {
+        const cat = (row as any).category || '其他';
+        const cnt = (row as any).cnt || 0;
+        interests.push({
+          category: cat, tags: [cat],
+          weight: Math.min(100, cnt * 20),
+          reason: `知识库中有 ${cnt} 条关于 ${cat} 的内容`,
+        });
+      }
+      return {
+        top_interests: interests.slice(0, 6),
+        preferred_categories: interests.slice(0, 4).map(i => i.category),
+        knowledge_gaps: [],
+        interest_summary: interests.slice(0, 3).map(i => i.category).join('、'),
+      };
+    }
+  } catch (e) {
+    console.warn('[profile] knowledge_items table not available:', e);
   }
 
-  // If no data, use defaults
-  if (interests.length === 0) {
-    interests.push({
-      category: '科技与AI', tags: ['AI', '科技', '编程'],
-      weight: 80, reason: '默认兴趣：科技与AI',
-    });
-  }
+  // Fallback: use default interests based on user's known preferences
+  return getDefaultProfile();
+}
 
+function getDefaultProfile(): Profile {
   return {
-    top_interests: interests.slice(0, 6),
-    preferred_categories: interests.slice(0, 4).map(i => i.category),
-    knowledge_gaps: [],
-    interest_summary: interests.slice(0, 3).map(i => i.category).join('、'),
+    top_interests: [
+      { category: '科技与AI', tags: ['AI', '大模型', 'Agent'], weight: 90, reason: '核心兴趣' },
+      { category: '产品与工具', tags: ['SaaS', '效率工具'], weight: 80, reason: '产品经理背景' },
+      { category: '职业发展', tags: ['求职', '面试'], weight: 75, reason: '当前求职阶段' },
+      { category: '效率方法', tags: ['工作流', '自动化'], weight: 70, reason: '效率提升' },
+    ],
+    preferred_categories: ['科技与AI', '产品与工具', '职业发展', '效率方法'],
+    knowledge_gaps: ['历史人文', '自然科学'],
+    interest_summary: 'AI技术、产品设计、职业发展、效率工具',
   };
 }
 

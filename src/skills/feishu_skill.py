@@ -232,7 +232,11 @@ def _extract_token_from_url(url: str) -> tuple[str, str]:
     m = re.search(r'/folder/([A-Za-z0-9_-]{10,})', url)
     if m:
         return m.group(1), "folder"
-    # 如果只是纯 token（无 URL 前缀）
+    # bitable/base: https://my.feishu.cn/base/PppsbADLlaneZVs6tUrcPfg2nef
+    m = re.search(r'/base/([A-Za-z0-9_-]{10,})', url)
+    if m:
+        return m.group(1), "bitable"
+    # 纯 token
     if re.match(r'^[A-Za-z0-9_-]{10,}$', url.strip()):
         return url.strip(), "unknown"
     return "", ""
@@ -294,9 +298,37 @@ def import_feishu_docs(urls: list[str]) -> int:
             continue
 
         if url_type == "folder":
-            # 文件夹：批量导入
             count = import_feishu_folder_to_sqlite(token_str)
             total += count
+            continue
+
+        if url_type == "bitable":
+            # 多维表格：读取所有记录导入
+            records = read_bitable_records()
+            for rec in records:
+                rid = rec.get("id", "")
+                if not rid or not rec.get("full_content"):
+                    continue
+                conn = _get_conn()
+                existing = conn.execute(
+                    "SELECT id FROM knowledge_items WHERE id = ?", (rid,)
+                ).fetchone()
+                if existing:
+                    continue
+                title = rec.get("full_content", "")[:100].split("\n")[0][:80]
+                item_id = rid
+                record = {
+                    "id": item_id, "title": title,
+                    "summary": rec.get("full_content", "")[:500],
+                    "full_content": rec.get("full_content", ""),
+                    "category": rec.get("category", "未分类"),
+                    "tags": [], "source_type": "feishu_bitable",
+                    "source_path": f"bitable:{token_str}",
+                    "created_at": rec.get("created_at", int(time.time() * 1000)),
+                }
+                if insert_item(record):
+                    total += 1
+            logger.info(f"Bitable 导入: {total} 条")
             continue
 
         # 单个文档

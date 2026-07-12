@@ -54,3 +54,4 @@ data/chroma_db/
 *.swp
 *.swo
 data/boss_cookies.json
+data/
