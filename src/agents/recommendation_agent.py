@@ -34,12 +34,9 @@ from skills.career_goal_skill import extract_career_goals
 from skills.internal_recommendation_skill import score_candidates, select_top_k, generate_reasons
 from skills.delivery_skill import (
     notify,
-    notify_desktop,
-    notify_internal_recommendations,
     save_internal_recommendations,
     format_internal_recommendation_message,
     print_internal_recommendations,
-    notify_wecom_internal,
 )
 from skills.feedback_skill import record_batch_recommended, get_feedback_stats
 
@@ -114,16 +111,18 @@ def _run_recommendation_cycle(dry_run: bool = False, count: int = 5) -> dict:
     logger.info("[6/7] 知识缺口分析...")
     gap_signals = _analyze_gaps(profile, career_goals)
 
-    # 7. 推送
-    logger.info("[7/7] 推送...")
+    # 7. 保存（推送由 daily_digest 汇总执行）
+    logger.info("[7/7] 保存...")
     if not dry_run:
         saved = save_internal_recommendations(selected, batch_id, "scheduled", gap_signals)
-        msg = format_internal_recommendation_message(selected)
-        notify(f"📖 知识库精华回顾 · {len(selected)} 篇", msg)
-        logger.info(f"  已保存: {saved} 条")
+        if args.push:
+            msg = format_internal_recommendation_message(selected)
+            notify(f"📖 知识库精华回顾 · {len(selected)} 篇", msg)
+        else:
+            logger.info(f"  已保存: {saved} 条（由 daily_digest 汇总推送）")
         record_batch_recommended(selected, batch_id, context="scheduled")
     else:
-        logger.info("  [DRY RUN] 跳过保存和通知")
+        logger.info("  [DRY RUN] 跳过保存")
 
     print_internal_recommendations(selected)
 
@@ -273,6 +272,7 @@ def main():
     parser.add_argument("--stats", action="store_true", help="查看推荐统计")
     parser.add_argument("--install-launchd", action="store_true", help="安装每日8:00定时任务")
     parser.add_argument("--generate-plist", action="store_true", help="输出 plist 到 stdout")
+    parser.add_argument("--push", action="store_true", help="立即推送结果到微信（定时模式仅保存，由 daily_digest 汇总推送）")
 
     args = parser.parse_args()
 

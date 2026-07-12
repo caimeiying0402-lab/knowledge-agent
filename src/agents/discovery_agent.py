@@ -27,12 +27,10 @@ from skills.interest_profile_skill import extract_profile
 from skills.web_search_skill import search_web, enrich_results
 from skills.recommendation_skill import score_results, deduplicate
 from skills.delivery_skill import (
-    notify_desktop,
     notify,
     save_recommendations,
     print_recommendations,
     format_recommendation_message,
-    notify_wecom_discovery,
 )
 
 logging.basicConfig(
@@ -168,15 +166,17 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
     new_items = deduplicate(scored)
     logger.info(f"  新内容: {len(new_items)} 条")
 
-    # 6. 推送
-    logger.info("[6/6] 推送...")
+    # 6. 保存
+    logger.info("[6/6] 保存结果...")
     if not dry_run and new_items:
         saved = save_recommendations(new_items, search_results, profile)
-        msg = format_recommendation_message(new_items)
-        notify(f"🆕 发现 {len(new_items)} 条新内容", msg)
-        logger.info(f"  已保存: {saved} 条")
+        if args.push:
+            msg = format_recommendation_message(new_items)
+            notify(f"🆕 发现 {len(new_items)} 条新内容", msg)
+        else:
+            logger.info(f"  已保存: {saved} 条（由 daily_digest 汇总推送）")
     elif dry_run:
-        logger.info("  [DRY RUN] 跳过保存和通知")
+        logger.info("  [DRY RUN] 跳过保存")
 
     # 终端输出
     print_recommendations(new_items)
@@ -325,6 +325,7 @@ def main():
     parser.add_argument("--install-launchd", action="store_true", help="安装 macOS launchd 定时任务（每天 06:00/18:00）")
     parser.add_argument("--generate-plist", action="store_true", help="生成 launchd plist 文件到 stdout，不安装")
     parser.add_argument("--use-gap-signals", action="store_true", help="加载 Recommendation Agent 的缺口信号作为额外搜索词")
+    parser.add_argument("--push", action="store_true", help="立即推送结果到微信（定时模式仅保存，由 daily_digest 汇总推送）")
 
     args = parser.parse_args()
 

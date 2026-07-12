@@ -224,7 +224,7 @@ def _get_wecom_access_token() -> str:
 
 
 def notify_email(title: str, body: str) -> bool:
-    """发送邮件通知（通过 SMTP，不受 IP 白名单限制，最稳定）"""
+    """发送邮件通知（通过 SMTP，不受 IP 白名单限制）"""
     import smtplib
     from email.mime.text import MIMEText
 
@@ -244,10 +244,17 @@ def notify_email(title: str, body: str) -> bool:
         msg["From"] = smtp_user
         msg["To"] = notify_to
 
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
+        if smtp_port == 465:
+            import ssl
+            ctx = ssl.create_default_context()
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15, context=ctx) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
 
         logger.info(f"邮件已发送: {title}")
         return True
@@ -317,10 +324,8 @@ def notify_wechat_kf(title: str, body: str) -> bool:
 
 
 def notify(title: str, body: str) -> bool:
-    """统一通知入口：微信客服 → 企微 → 邮件"""
+    """统一通知入口：微信客服 → 邮件兜底"""
     if notify_wechat_kf(title, body):
-        return True
-    if notify_wecom_textcard(title, body):
         return True
     return notify_email(title, body)
 
