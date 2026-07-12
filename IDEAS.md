@@ -22,7 +22,7 @@
 2. 只能电脑端么 我的手机似乎还没有拥抱AI
 3. knowledgeagent 还需要MAC开机启动才能同步飞书
 4. knowledge agent现在创建的飞书表格的skill看看需不需要再优化
-5. knowledge agent输入端转到个人微信/或者飞书，输出端转到飞书文档/或orbisidian
+5. knowledge agent输入端转到个人微信/或者飞书/钉钉，可配置化，输出端转到飞书文档/或orbisidian
 6. 各个独立的agent之间的打通和联动？
 7. 从个人产品转移到SASS产品，开放给其他人
 8. AI导师功能（基于用户需求学习）
