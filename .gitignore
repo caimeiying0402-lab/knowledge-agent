@@ -55,3 +55,6 @@ data/chroma_db/
 *.swo
 data/boss_cookies.json
 data/
+
+# runtime data
+data/
