@@ -35,14 +35,14 @@ def send_daily_digest() -> bool:
             star = "⭐" if score >= 0.8 else "🔵" if score >= 0.6 else "📎"
             item_id = r.get("item_id", "")
 
-            # 从知识库查原标题 + 内容摘要
+            # 从知识库查原标题 + 原文（优先结构化笔记，其次AI摘要）
             row = conn.execute(
-                "SELECT title, summary, full_content FROM knowledge_items WHERE id = ?", (item_id,)
+                "SELECT title, full_content, summary FROM knowledge_items WHERE id = ?", (item_id,)
             ).fetchone()
             if row:
                 title = row["title"][:60]
-                # 取 summary 或 full_content 的前 150 字作为原文片段
-                excerpt = (row["summary"] or row["full_content"] or "")[:150].strip()
+                # 原文：优先 full_content（结构化笔记），降级 summary（AI摘要）
+                excerpt = (row["full_content"] or row["summary"] or "")[:200].strip()
                 if excerpt:
                     title_line = f"{star} [{score*100:.0f}%] {title}"
                     if len(title_line) + len(excerpt) < 400:
