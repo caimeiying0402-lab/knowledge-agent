@@ -1,0 +1,198 @@
+{
+  "main": {
+    "id": "ae143eaf235401df",
+    "type": "split",
+    "children": [
+      {
+        "id": "5d36236da4a82b37",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "09c3ee974972ebca",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "健康与心理/20260704-9种累的识别与应对.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "20260704-9种累的识别与应对"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "55551fa6f8936960",
+    "type": "split",
+    "children": [
+      {
+        "id": "2cca34fcc15a552e",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "3c2846a2d3d0e6bf",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "11be0b1773c9c3de",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "e13dd545833b025a",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "544732d0ca5abe56",
+    "type": "split",
+    "children": [
+      {
+        "id": "bca80e802d7ca345",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "3063be7c2fe5201a",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "健康与心理/20260704-9种累的识别与应对.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "20260704-9种累的识别与应对 的反向链接列表"
+            }
+          },
+          {
+            "id": "7b930b4cc5324b9d",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "健康与心理/20260704-9种累的识别与应对.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "20260704-9种累的识别与应对 的出链列表"
+            }
+          },
+          {
+            "id": "145d093abef771bb",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "79de276a9806962c",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "ea4d67a380ecd4ea",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "健康与心理/20260704-9种累的识别与应对.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "20260704-9种累的识别与应对 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "09c3ee974972ebca",
+  "lastOpenFiles": [
+    "健康与心理/20260701-与身体谈恋爱走出病痛.md",
+    "健康与心理/20260701-不要在重大选择上违背自己.md",
+    "技术-编程/20260628-SQLite知识库测试.md",
+    "个人成长/20260704-如何度过无正反馈的沉默期.md",
+    "个人成长/20260628-纳瓦尔宝典财富观.md",
+    "个人成长/20260628-马斯洛需求层次理论.md",
+    "产品与工具/20260712-财务产品经理笔记梳理.md",
+    "产品与工具/20260628-Claude-Code-AI编程助手.md",
+    "产品与工具/20260628-Claude-Code-终端AI编程助手.md"
+  ]
+}
