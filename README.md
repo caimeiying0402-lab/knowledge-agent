@@ -19,13 +19,28 @@ bash start_wechat.sh sync
 ### 岗位匹配
 
 ```bash
-# 手动粘贴 JD（最常用，30 秒出分，无需登录任何网站）
-bash match.sh
+bash match.sh                      # 手动粘贴 JD，30 秒出分
+bash match.sh -f job.txt           # 从文件读 JD
+bash match.sh --search             # 自动搜索+匹配+TOP3（需先 start_chrome_cdp.sh）
+```
 
-# 从文件读 JD
-bash match.sh -f job_description.txt
+### 知识库管理
 
-# 自动搜索+匹配+TOP3+简历定制（需先启动 Chrome）
+```bash
+bash feishu_import.sh <URL>        # 导入飞书文档/表格到知识库
+bash profile.sh                    # 查看 AI 兴趣画像
+bash profile.sh gen                # 重新生成画像（导入新内容后）
+bash profile.sh edit               # 手动编辑画像关键词
+```
+
+### 推荐系统
+
+```bash
+.venv/bin/python -m agents.discovery_agent --dry-run       # 试运行 Discovery
+.venv/bin/python -m agents.recommendation_agent --dry-run  # 试运行 Recommendation
+```
+
+推荐结果推送：**个人微信（微信客服）→ 企微 → 邮件** 三层兜底。
 bash start_chrome_cdp.sh           # 启动隔离 Chrome，手动登录 BOSS/猎聘
 bash match.sh --search             # 自动搜索 → 匹配 → TOP3 → 简历定制+打招呼语
 ```

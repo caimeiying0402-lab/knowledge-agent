@@ -271,6 +271,12 @@ def _process_single_message(msg: dict):
     send_time = msg.get("send_time", 0)
     send_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(send_time)) if send_time else "unknown"
 
+    # 保存最新的用户 ID（供后续推送通知使用）
+    if external_userid and external_userid != "unknown":
+        user_file = BASE_DIR / "data" / ".kf_user_id"
+        user_file.parent.mkdir(parents=True, exist_ok=True)
+        user_file.write_text(external_userid)
+
     # 只处理客户发送的消息（origin=3）
     if origin != 3:
         return

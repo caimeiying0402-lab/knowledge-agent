@@ -249,8 +249,70 @@ def notify_email(title: str, body: str) -> bool:
         return False
 
 
+def _get_kf_user_id() -> str:
+    """获取微信客服的用户 ID（从最近一次收发消息中保存的）"""
+    user_file = BASE_DIR / "data" / ".kf_user_id"
+    if user_file.exists():
+        uid = user_file.read_text().strip()
+        if uid and uid != "unknown":
+            return uid
+    return ""
+
+
+def notify_wechat_kf(title: str, body: str) -> bool:
+    """通过微信客服发送消息到个人微信"""
+    user_id = _get_kf_user_id()
+    if not user_id:
+        logger.debug("未找到微信客服用户 ID")
+        return False
+
+    corpid = os.getenv("WECOM_CORP_ID", "")
+    corpsecret = os.getenv("WECOM_CORP_SECRET", "") or os.getenv("WECOM_KF_SECRET", "")
+    kf_id = os.getenv("WECOM_KF_OPEN_ID", "")
+
+    if not all([corpid, corpsecret, kf_id]):
+        logger.debug("微信客服配置不完整")
+        return False
+
+    try:
+        # 1. 获取 access_token
+        token_url = f"https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={corpid}&corpsecret={corpsecret}"
+        token_resp = requests.get(token_url, timeout=10)
+        token = token_resp.json().get("access_token", "")
+
+        if not token:
+            return False
+
+        # 2. 发送消息
+        import uuid
+        msg = f"{title}\n\n{body}"
+        resp = requests.post(
+            f"https://qyapi.weixin.qq.com/cgi-bin/kf/send_msg?access_token={token}",
+            json={
+                "touser": user_id,
+                "open_kfid": kf_id,
+                "msgid": str(uuid.uuid4()).replace("-", "")[:32],
+                "msgtype": "text",
+                "text": {"content": msg[:2000]},
+            },
+            timeout=15,
+        )
+        result = resp.json()
+        if result.get("errcode") == 0:
+            logger.info(f"微信客服推送成功: {title}")
+            return True
+        else:
+            logger.warning(f"微信客服推送失败(errcode={result.get('errcode')}): {result.get('errmsg','')}")
+            return False
+    except Exception as e:
+        logger.warning(f"微信客服推送异常: {e}")
+        return False
+
+
 def notify(title: str, body: str) -> bool:
-    """统一通知入口：直接企微 → 邮件兜底"""
+    """统一通知入口：微信客服 → 企微 → 邮件"""
+    if notify_wechat_kf(title, body):
+        return True
     if notify_wecom_textcard(title, body):
         return True
     return notify_email(title, body)

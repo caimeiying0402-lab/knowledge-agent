@@ -69,13 +69,20 @@ def process(source: str) -> dict:
         "embedding_status": False,
     }
 
-    # ── 5. 写入飞书 ──
+    # ── 5. 写入飞书 + Obsidian vault ──
     result = write_to_bitable(record)
     if result.get("code") == 0:
         record["record_id"] = result["data"]["record"]["record_id"]
         _print_success(record, platform)
     else:
         print(f"❌ 飞书写入失败: {result}")
+
+    # Obsidian vault 写入（后台，不影响主流程）
+    try:
+        from skills.obsidian_skill import write_to_vault
+        write_to_vault(record)
+    except Exception:
+        pass
 
     # ── 6. 同步写入 SQLite ──
     _save_to_sqlite(record)
