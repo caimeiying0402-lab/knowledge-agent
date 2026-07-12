@@ -76,6 +76,141 @@ def read_bitable_records(page_size: int = 100) -> list[dict]:
     return all_records
 
 
+def list_feishu_folder(folder_token: str) -> list[dict]:
+    """列出飞书文件夹中的所有文件（文档/表格等）"""
+    token = get_tenant_access_token()
+    if not token:
+        return []
+
+    all_files = []
+    page_token = ""
+
+    try:
+        while True:
+            url = "https://open.feishu.cn/open-apis/drive/v1/files"
+            params = {
+                "folder_token": folder_token,
+                "page_size": 50,
+            }
+            if page_token:
+                params["page_token"] = page_token
+
+            headers = {"Authorization": f"Bearer {token}"}
+            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            data = resp.json()
+
+            if data.get("code") != 0:
+                logger.warning(f"飞书文件夹列表失败: {data}")
+                break
+
+            for f in data.get("data", {}).get("files", []):
+                all_files.append({
+                    "token": f.get("token", ""),
+                    "name": f.get("name", ""),
+                    "type": f.get("type", ""),  # docx, bitable, folder, etc.
+                })
+
+            if data.get("data", {}).get("has_more"):
+                page_token = data["data"].get("page_token", "")
+            else:
+                break
+
+        logger.info(f"飞书文件夹 [{folder_token}]: {len(all_files)} 个文件")
+        return all_files
+    except Exception as e:
+        logger.warning(f"飞书文件夹列表异常: {e}")
+        return []
+
+
+def import_feishu_folder_to_sqlite(folder_token: str) -> int:
+    """将飞书文件夹中的所有文档导入 SQLite 知识库"""
+    from knowledge.sqlite_store import insert_item, _get_conn
+    import uuid
+
+    files = list_feishu_folder(folder_token)
+    if not files:
+        return 0
+
+    new_count = 0
+    for f in files:
+        if f["type"] not in ("docx", "doc"):
+            continue
+
+        token_str = f["token"]
+        # 检查已存在
+        conn = _get_conn()
+        existing = conn.execute(
+            "SELECT id FROM knowledge_items WHERE source_path LIKE ?",
+            (f"%{token_str}%",)
+        ).fetchone()
+        if existing:
+            continue
+
+        content = read_feishu_doc_by_token(token_str)
+        if not content:
+            continue
+
+        # 构建知识条目
+        title = f["name"]
+        summary = content[:500]
+        item_id = str(uuid.uuid4())
+
+        # 简单分类（基于文件名关键词）
+        category = "其他"
+        name_lower = title.lower()
+        if any(k in name_lower for k in ["ai", "llm", "agent", "rag", "大模型", "prompt"]):
+            category = "科技与AI"
+        elif any(k in name_lower for k in ["产品", "prd", "需求", "竞品", "原型"]):
+            category = "产品与工具"
+        elif any(k in name_lower for k in ["财务", "会计", "税务", "费控", "核算"]):
+            category = "职场与创业"
+        elif any(k in name_lower for k in ["面试", "简历", "求职", "职业"]):
+            category = "职场与创业"
+        elif any(k in name_lower for k in ["效率", "工具", "方法", "习惯"]):
+            category = "效率方法"
+
+        record = {
+            "id": item_id,
+            "title": title,
+            "summary": summary,
+            "full_content": content,
+            "category": category,
+            "tags": [],
+            "source_type": "feishu_doc",
+            "source_path": f"飞书文档: {token_str}",
+            "created_at": int(time.time() * 1000),
+        }
+        if insert_item(record):
+            new_count += 1
+
+    logger.info(f"飞书文件夹导入: {new_count} 条新增（共 {len(files)} 个文件）")
+    return new_count
+
+
+def read_feishu_doc_by_token(doc_token: str) -> str:
+    """通过 doc_token 直接读取飞书文档原始内容"""
+    token = get_tenant_access_token()
+    if not token:
+        return ""
+
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/raw_content"
+        resp = requests.get(url, headers=headers, timeout=15)
+        data = resp.json()
+
+        if data.get("code") == 0:
+            content = data.get("data", {}).get("content", "")
+            logger.info(f"飞书文档读取成功: {len(content)} 字符")
+            return content
+        else:
+            logger.warning(f"飞书文档读取失败: {data}")
+            return ""
+    except Exception as e:
+        logger.warning(f"飞书文档读取异常: {e}")
+        return ""
+
+
 def read_feishu_doc_content(doc_url: str) -> str:
     """读取飞书文档内容（通过 doc token 或 URL）"""
     token = get_tenant_access_token()
