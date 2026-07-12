@@ -211,6 +211,140 @@ def read_feishu_doc_by_token(doc_token: str) -> str:
         return ""
 
 
+def _extract_token_from_url(url: str) -> tuple[str, str]:
+    """从飞书 URL 提取 (token, type)
+    支持: /wiki/xxx, /docx/xxx, /docs/xxx, /drive/folder/xxx
+    """
+    import re
+    # wiki 文档: https://my.feishu.cn/wiki/HBapwWqmZiQPvkkTr4kci6fKnse
+    m = re.search(r'/wiki/([A-Za-z0-9_-]{10,})', url)
+    if m:
+        return m.group(1), "wiki"
+    # docx 文档
+    m = re.search(r'/docx/([A-Za-z0-9_-]{10,})', url)
+    if m:
+        return m.group(1), "docx"
+    # docs 文档
+    m = re.search(r'/docs/([A-Za-z0-9_-]{10,})', url)
+    if m:
+        return m.group(1), "doc"
+    # drive folder
+    m = re.search(r'/folder/([A-Za-z0-9_-]{10,})', url)
+    if m:
+        return m.group(1), "folder"
+    # 如果只是纯 token（无 URL 前缀）
+    if re.match(r'^[A-Za-z0-9_-]{10,}$', url.strip()):
+        return url.strip(), "unknown"
+    return "", ""
+
+
+def read_feishu_wiki_content(wiki_token: str) -> str:
+    """读取飞书 Wiki/知识库 文档内容"""
+    token = get_tenant_access_token()
+    if not token:
+        return ""
+
+    # 先尝试 wiki API
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        # wiki v2 API: 获取节点信息
+        info_url = f"https://open.feishu.cn/open-apis/wiki/v2/spaces/get_node?token={wiki_token}"
+        info_resp = requests.get(info_url, headers=headers, timeout=10)
+        info_data = info_resp.json()
+
+        if info_data.get("code") == 0:
+            node = info_data.get("data", {}).get("node", {})
+            obj_type = node.get("obj_type", "")
+            obj_token = node.get("obj_token", "")
+            if obj_type == "docx" and obj_token:
+                # wiki 节点实际是 docx，用 docx API 读取
+                return read_feishu_doc_by_token(obj_token)
+
+            # 尝试直接通过 wiki token 读取纯文本
+            space_id = node.get("space_id", "")
+            if space_id:
+                # 获取文档纯文本
+                raw_url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{wiki_token}/raw_content"
+                raw_resp = requests.get(raw_url, headers=headers, timeout=15)
+                raw_data = raw_resp.json()
+                if raw_data.get("code") == 0:
+                    return raw_data.get("data", {}).get("content", "")
+    except Exception:
+        pass
+
+    # 降级：直接用 docx API 尝试
+    content = read_feishu_doc_by_token(wiki_token)
+    if content:
+        return content
+
+    logger.warning(f"Wiki 文档读取失败: {wiki_token}")
+    return ""
+
+
+def import_feishu_docs(urls: list[str]) -> int:
+    """批量导入飞书文档（支持 wiki/docx/folder URL 列表）"""
+    from knowledge.sqlite_store import insert_item, _get_conn
+    import uuid
+
+    total = 0
+    for url in urls:
+        token_str, url_type = _extract_token_from_url(url.strip())
+        if not token_str:
+            logger.warning(f"无法解析 URL: {url}")
+            continue
+
+        if url_type == "folder":
+            # 文件夹：批量导入
+            count = import_feishu_folder_to_sqlite(token_str)
+            total += count
+            continue
+
+        # 单个文档
+        conn = _get_conn()
+        existing = conn.execute(
+            "SELECT id FROM knowledge_items WHERE source_path LIKE ?",
+            (f"%{token_str}%",)
+        ).fetchone()
+        if existing:
+            logger.debug(f"已存在，跳过: {token_str[:20]}")
+            continue
+
+        # 读取内容
+        if url_type == "wiki":
+            content = read_feishu_wiki_content(token_str)
+        else:
+            content = read_feishu_doc_by_token(token_str)
+
+        if not content:
+            logger.warning(f"无法读取内容: {url}")
+            continue
+
+        # 构建条目
+        title = content.strip().split("\n")[0][:100] or token_str[:20]
+        item_id = str(uuid.uuid4())
+
+        name_lower = title.lower()
+        category = "其他"
+        if any(k in name_lower for k in ["ai", "llm", "agent", "rag", "大模型", "prompt", "gpt", "claude"]):
+            category = "科技与AI"
+        elif any(k in name_lower for k in ["产品", "prd", "需求", "竞品", "原型"]):
+            category = "产品与工具"
+        elif any(k in name_lower for k in ["财务", "会计", "税务", "费控", "核算"]):
+            category = "职场与创业"
+
+        record = {
+            "id": item_id, "title": title, "summary": content[:500],
+            "full_content": content, "category": category, "tags": [],
+            "source_type": f"feishu_{url_type}", "source_path": f"{url_type}:{token_str}",
+            "created_at": int(time.time() * 1000),
+        }
+        if insert_item(record):
+            total += 1
+            logger.info(f"导入: {title[:50]}")
+
+    return total
+
+
 def read_feishu_doc_content(doc_url: str) -> str:
     """读取飞书文档内容（通过 doc token 或 URL）"""
     token = get_tenant_access_token()

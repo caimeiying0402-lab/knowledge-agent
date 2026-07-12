@@ -217,7 +217,28 @@ def _get_wecom_access_token() -> str:
 
 
 def notify_wecom_textcard(title: str, description: str, url: str = "") -> bool:
-    """发送企业微信文本卡片消息"""
+    """发送企业微信文本卡片消息（优先通过 Worker 代理，绕过 IP 白名单）"""
+    # 方式 1: Cloudflare Worker 代理（稳定 IP，不受本地动态 IP 影响）
+    worker_url = os.getenv("CF_WORKER_URL", "")
+    sync_key = os.getenv("CF_SYNC_API_KEY", "")
+    if worker_url and sync_key:
+        try:
+            resp = requests.post(
+                f"{worker_url}/api/notify",
+                json={"title": title[:80], "description": description[:500], "url": url},
+                headers={"Authorization": f"Bearer {sync_key}"},
+                timeout=15,
+            )
+            result = resp.json()
+            if result.get("errcode") == 0:
+                logger.info(f"企微推送成功(via Worker): {title}")
+                return True
+            else:
+                logger.warning(f"Worker推送失败: {result}，降级直连")
+        except Exception as e:
+            logger.debug(f"Worker推送异常: {e}，降级直连")
+
+    # 方式 2: 直连企微 API（需要 IP 白名单）
     token = _get_wecom_access_token()
     if not token:
         return False
@@ -226,25 +247,21 @@ def notify_wecom_textcard(title: str, description: str, url: str = "") -> bool:
     if not agent_id:
         return False
 
-    body = {
-        "touser": "@all",
-        "msgtype": "textcard",
-        "agentid": int(agent_id),
-        "textcard": {
-            "title": title[:80],
-            "description": description[:500],
-            "url": url or "https://work.weixin.qq.com",
-        },
-    }
-
     try:
+        body = {
+            "touser": "@all", "msgtype": "textcard", "agentid": int(agent_id),
+            "textcard": {
+                "title": title[:80], "description": description[:500],
+                "url": url or "https://work.weixin.qq.com",
+            },
+        }
         resp = requests.post(
             f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
             json=body, timeout=10,
         )
         result = resp.json()
         if result.get("errcode") == 0:
-            logger.info(f"企微推送成功: {title}")
+            logger.info(f"企微推送成功(直连): {title}")
             return True
         else:
             logger.warning(f"企微推送失败: {result}")

@@ -8,7 +8,7 @@ import { discoveryFetch, discoveryScheduled } from './discovery';
 interface Env {
   DB: D1Database; IMAGES: R2Bucket;
   WECOM_TOKEN: string; WECOM_AES_KEY: string; WECOM_CORP_ID: string;
-  WECOM_CORP_SECRET: string; SYNC_API_KEY: string;
+  WECOM_CORP_SECRET: string; WECOM_AGENT_ID: string; SYNC_API_KEY: string;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -395,6 +395,52 @@ async function handleImageGet(req: Request, env: Env, key: string): Promise<Resp
   return new Response(o.body,{headers:h});
 }
 
+// ═══════════════════════════════════════════════════════════════
+// API: 代发企微消息（绕过本地 IP 白名单限制）
+// ═══════════════════════════════════════════════════════════════
+async function handleNotify(req: Request, env: Env): Promise<Response> {
+  const auth = req.headers.get("Authorization") || "";
+  if (auth !== `Bearer ${env.SYNC_API_KEY}`) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  try {
+    const { title, description, url } = await req.json() as any;
+    if (!title || !description) {
+      return Response.json({ error: "title and description required" }, { status: 400 });
+    }
+
+    // 获取企微 access_token
+    const tokenUrl = `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${env.WECOM_CORP_ID}&corpsecret=${env.WECOM_CORP_SECRET}`;
+    const tokenResp = await fetch(tokenUrl);
+    const tokenData = await tokenResp.json() as any;
+    const accessToken = tokenData.access_token;
+    if (!accessToken) {
+      return Response.json({ error: "failed to get access_token", detail: tokenData }, { status: 500 });
+    }
+
+    // 发送 textcard 消息
+    const sendBody = {
+      touser: "@all",
+      msgtype: "textcard",
+      agentid: parseInt(env.WECOM_AGENT_ID || "0"),
+      textcard: {
+        title: title.slice(0, 80),
+        description: description.slice(0, 500),
+        url: url || "https://work.weixin.qq.com",
+      },
+    };
+    const sendResp = await fetch(
+      `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${accessToken}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sendBody) }
+    );
+    const sendResult = await sendResp.json() as any;
+    return Response.json(sendResult);
+  } catch (e) {
+    console.error(`[notify] ${e}`);
+    return Response.json({ error: "internal error" }, { status: 500 });
+  }
+}
+
 export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     await discoveryScheduled(event, env, ctx);
@@ -410,6 +456,7 @@ export default {
       if(p.startsWith("/api/image/")&&m==="GET")return handleImageGet(req,env,decodeURIComponent(p.slice(11)));
       if(p==="/health"&&m==="GET")return Response.json({ok:true,ts:Math.floor(Date.now()/1000)});
       if(p==="/api/stats"&&m==="GET")return handleStats(req,env);
+      if(p==="/api/notify"&&m==="POST")return handleNotify(req,env);
       if(p.startsWith("/api/discovery/"))return discoveryFetch(req,env);
       return new Response("nf",{status:404});
     }catch(e){console.error(`[fatal] ${e}`);return new Response("err",{status:500});}
