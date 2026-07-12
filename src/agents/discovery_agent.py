@@ -31,6 +31,7 @@ from skills.delivery_skill import (
     save_recommendations,
     print_recommendations,
     format_recommendation_message,
+    notify_wecom_discovery,
 )
 
 logging.basicConfig(
@@ -158,6 +159,7 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
         saved = save_recommendations(new_items, search_results, profile)
         msg = format_recommendation_message(new_items)
         notify_desktop("Knowledge Agent 发现新内容", msg)
+        notify_wecom_discovery(new_items)
         logger.info(f"  已保存: {saved} 条")
     elif dry_run:
         logger.info("  [DRY RUN] 跳过保存和通知")

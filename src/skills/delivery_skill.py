@@ -1,14 +1,23 @@
-"""消息推送 — 桌面通知 + SQLite 持久化 + 格式化输出"""
+"""消息推送 — 企微通知 + 桌面通知 + SQLite 持久化 + 格式化输出"""
 import json
 import logging
+import os
 import subprocess
 import uuid
 import time
 from pathlib import Path
 
+import requests
+from dotenv import load_dotenv
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent.parent
+load_dotenv(BASE_DIR / "config" / ".env")
+
+# 企微 access_token 缓存
+_wx_token = None
+_wx_token_expire = 0
 
 
 def notify_desktop(title: str, message: str) -> bool:
@@ -176,7 +185,113 @@ def print_internal_recommendations(items: list[dict]) -> None:
         print(f"    ID: {item.get('id', '')[:8]}")
         print(f"    理由: {item.get('reason', '')}")
         print(f"    分类: {item.get('category', '')}")
-        print(f"    内容: {(item.get('content_sim', 0)*100):.0f}% | "
-              f"职业: {(item.get('career_boost', 0)*100):.0f}% | "
-              f"时间: {(item.get('recency', 0)*100):.0f}%")
     print()
+
+
+# ── 企业微信推送 ──
+
+def _get_wecom_access_token() -> str:
+    """获取企业微信 access_token（带缓存）"""
+    global _wx_token, _wx_token_expire
+    now = int(time.time())
+    if _wx_token and now < _wx_token_expire:
+        return _wx_token
+
+    corpid = os.getenv("WECOM_CORP_ID", "")
+    secret = os.getenv("WECOM_CORP_SECRET", "")
+    if not corpid or not secret:
+        logger.debug("企微配置缺失，跳过推送")
+        return ""
+
+    try:
+        url = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+        resp = requests.get(url, params={"corpid": corpid, "corpsecret": secret}, timeout=10)
+        data = resp.json()
+        _wx_token = data.get("access_token", "")
+        _wx_token_expire = now + int(data.get("expires_in", 7200)) - 300
+        logger.debug(f"企微 access_token 已获取")
+        return _wx_token
+    except Exception as e:
+        logger.warning(f"获取企微 token 失败: {e}")
+        return ""
+
+
+def notify_wecom_textcard(title: str, description: str, url: str = "") -> bool:
+    """发送企业微信文本卡片消息"""
+    token = _get_wecom_access_token()
+    if not token:
+        return False
+
+    agent_id = os.getenv("WECOM_AGENT_ID", "")
+    if not agent_id:
+        return False
+
+    body = {
+        "touser": "@all",
+        "msgtype": "textcard",
+        "agentid": int(agent_id),
+        "textcard": {
+            "title": title[:80],
+            "description": description[:500],
+            "url": url or "https://work.weixin.qq.com",
+        },
+    }
+
+    try:
+        resp = requests.post(
+            f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
+            json=body, timeout=10,
+        )
+        result = resp.json()
+        if result.get("errcode") == 0:
+            logger.info(f"企微推送成功: {title}")
+            return True
+        else:
+            logger.warning(f"企微推送失败: {result}")
+            return False
+    except Exception as e:
+        logger.warning(f"企微推送异常: {e}")
+        return False
+
+
+def notify_wecom_discovery(recommendations: list[dict]) -> bool:
+    """企微推送 Discovery 发现结果"""
+    if not recommendations:
+        return False
+
+    top = recommendations[:5]
+    desc_lines = []
+    for i, r in enumerate(top):
+        star = "⭐" if r.get("score", 0) >= 80 else "🔵" if r.get("score", 0) >= 70 else "📎"
+        desc_lines.append(
+            f"{star} [{r.get('score', 0)}分] {r.get('title', r.get('url', ''))[:60]}"
+        )
+        if r.get("reason"):
+            desc_lines.append(f"   {r['reason'][:100]}")
+
+    title = f"🔍 发现 {len(recommendations)} 条新内容"
+    description = "\n".join(desc_lines)
+    first_url = top[0].get("url", "") if top else ""
+
+    return notify_wecom_textcard(title, description, first_url)
+
+
+def notify_wecom_internal(items: list[dict]) -> bool:
+    """企微推送内部推荐结果"""
+    if not items:
+        return False
+
+    top = items[:5]
+    desc_lines = []
+    for i, item in enumerate(top):
+        score = item.get("score", 0)
+        star = "⭐" if score >= 0.8 else "🔵" if score >= 0.6 else "📎"
+        title = item.get("title", "无标题")[:60]
+        reason = item.get("reason", "")[:80]
+        desc_lines.append(f"{star} [{score*100:.0f}%] {title}")
+        desc_lines.append(f"   {reason}")
+
+    title = f"📚 知识库今日精选 {len(items)} 条"
+    description = "\n".join(desc_lines)
+
+    return notify_wecom_textcard(title, description)

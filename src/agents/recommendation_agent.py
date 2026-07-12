@@ -38,6 +38,7 @@ from skills.delivery_skill import (
     save_internal_recommendations,
     format_internal_recommendation_message,
     print_internal_recommendations,
+    notify_wecom_internal,
 )
 from skills.feedback_skill import record_batch_recommended, get_feedback_stats
 
@@ -118,6 +119,7 @@ def _run_recommendation_cycle(dry_run: bool = False, count: int = 5) -> dict:
         saved = save_internal_recommendations(selected, batch_id, "scheduled", gap_signals)
         msg = format_internal_recommendation_message(selected)
         notify_internal_recommendations(selected)
+        notify_wecom_internal(selected)
         logger.info(f"  已保存: {saved} 条")
         record_batch_recommended(selected, batch_id, context="scheduled")
     else:
