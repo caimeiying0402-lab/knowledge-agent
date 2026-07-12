@@ -124,9 +124,20 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
     if gap_queries:
         logger.info(f"  追加缺口搜索词: {gap_queries}")
 
-    # 3. 全网搜索
-    logger.info(f"[3/6] 全网搜索（{len(queries)} 个查询）...")
+    # 3. 全网搜索 + 固定内容源
+    logger.info(f"[3/7] 全网搜索（{len(queries)} 个查询）...")
     search_results = search_web(queries, max_results_per_query=5)
+
+    # 3.5 固定内容源
+    logger.info("[3.5/7] 扫描固定内容源...")
+    try:
+        from skills.content_source_skill import scan_all_sources
+        source_results = scan_all_sources()
+        if source_results:
+            search_results = list(search_results) + source_results
+            logger.info(f"  固定源补充 {len(source_results)} 条")
+    except Exception as e:
+        logger.debug(f"固定源扫描失败: {e}")
 
     if not search_results:
         logger.info("无搜索结果，周期结束")

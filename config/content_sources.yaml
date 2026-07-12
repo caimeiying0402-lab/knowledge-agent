@@ -1,0 +1,36 @@
+# 固定内容源配置
+# Discovery Agent 除了全网搜索，还会扫描这些固定来源
+
+sources:
+  # ── RSS 源（最简单可靠） ──
+  rss:
+    - name: "阮一峰的网络日志"
+      url: "https://www.ruanyifeng.com/blog/atom.xml"
+      category: "科技与AI"
+      enabled: true
+
+    - name: "少数派"
+      url: "https://sspai.com/feed"
+      category: "效率方法"
+      enabled: true
+
+    # - name: "微信公众号(通过RSSHub)"
+    #   url: "https://rsshub.app/wechat/mp/profile/公众号ID"
+    #   category: "职场与创业"
+    #   enabled: false
+
+  # ── 豆瓣小组 ──
+  # 需要用 Playwright 模拟浏览器抓取
+  douban_groups: []
+
+  # ── 固定网页（定期检查更新）──
+  web_pages:
+    - name: "产品经理知识库"
+      url: "https://www.woshipm.com/"
+      category: "产品与工具"
+      enabled: false
+
+# 扫描频率
+schedule:
+  interval_hours: 12
+  max_items_per_source: 5
