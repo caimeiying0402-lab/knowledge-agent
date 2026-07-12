@@ -250,15 +250,9 @@ def notify_email(title: str, body: str) -> bool:
 
 
 def notify(title: str, body: str) -> bool:
-    """统一通知入口：企微优先 → 邮件兜底"""
-    # 1. 桌面通知（始终尝试）
-    notify_desktop(title, body)
-
-    # 2. 企微
+    """统一通知入口：直接企微 → 邮件兜底"""
     if notify_wecom_textcard(title, body):
         return True
-
-    # 3. 邮件兜底
     return notify_email(title, body)
 
 
