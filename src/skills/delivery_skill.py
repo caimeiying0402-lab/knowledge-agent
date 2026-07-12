@@ -79,18 +79,23 @@ def save_recommendations(
 
 
 def format_recommendation_message(recommendations: list[dict]) -> str:
-    """格式化推荐摘要，用于桌面通知和终端输出"""
+    """格式化外部发现摘要，含原文链接"""
     if not recommendations:
-        return "本次未发现新的推荐内容。"
+        return ""
 
     top = recommendations[:5]
-    lines = [f"发现 {len(recommendations)} 条可能感兴趣的内容:\n"]
+    lines = [f"🌐 全网搜集 · {len(recommendations)} 篇\n"]
     for i, r in enumerate(top):
         star = "⭐" if r.get("score", 0) >= 80 else "🔵" if r.get("score", 0) >= 70 else "📎"
-        lines.append(
-            f"{star} [{r.get('score', 0)}分] {r.get('title', r.get('url', '无标题'))[:80]}\n"
-            f"   {r.get('reason', '')[:120]}"
-        )
+        url = r.get("url", "")
+        title = r.get("title", url)[:80]
+        reason = r.get("reason", "")[:120]
+        lines.append(f"{star} [{r.get('score', 0)}分] {title}")
+        if reason:
+            lines.append(f"   {reason}")
+        if url:
+            lines.append(f"   🔗 {url[:200]}")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -164,13 +169,15 @@ def format_internal_recommendation_message(items: list[dict]) -> str:
     if not items:
         return "暂无可推荐内容。"
 
-    lines = [f"知识库今日精选 {len(items)} 条:\n"]
+    lines = [f"📖 知识库精华回顾 · {len(items)} 篇\n"]
     for i, item in enumerate(items):
         score = item.get("score", 0)
         star = "⭐" if score >= 0.8 else "🔵" if score >= 0.6 else "📎"
         title = item.get("title", "无标题")[:60]
         reason = item.get("reason", "")[:100]
-        lines.append(f"{star} [{score*100:.0f}%] {title}\n   {reason}")
+        lines.append(f"{star} [{score*100:.0f}%] {title}")
+        lines.append(f"   {reason}")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -353,25 +360,25 @@ def notify_wecom_textcard(title: str, description: str, url: str = "") -> bool:
 
 
 def notify_wecom_discovery(recommendations: list[dict]) -> bool:
-    """企微推送 Discovery 发现结果"""
+    """推送 Discovery 发现结果"""
     if not recommendations:
         return False
 
     top = recommendations[:5]
-    desc_lines = []
+    desc_lines = [f"共发现 {len(recommendations)} 条新内容\n"]
     for i, r in enumerate(top):
         star = "⭐" if r.get("score", 0) >= 80 else "🔵" if r.get("score", 0) >= 70 else "📎"
-        desc_lines.append(
-            f"{star} [{r.get('score', 0)}分] {r.get('title', r.get('url', ''))[:60]}"
-        )
+        url = r.get("url", "")
+        desc_lines.append(f"{star} [{r.get('score', 0)}分] {r.get('title', '')[:60]}")
         if r.get("reason"):
             desc_lines.append(f"   {r['reason'][:100]}")
+        if url:
+            desc_lines.append(f"   🔗 {url[:200]}")
+        desc_lines.append("")
 
-    title = f"🔍 发现 {len(recommendations)} 条新内容"
+    title = f"🆕 发现 {len(recommendations)} 条新内容"
     description = "\n".join(desc_lines)
-    first_url = top[0].get("url", "") if top else ""
-
-    return notify_wecom_textcard(title, description, first_url)
+    return notify(title, description)
 
 
 def notify_wecom_internal(items: list[dict]) -> bool:

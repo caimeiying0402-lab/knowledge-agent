@@ -170,7 +170,7 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
     if not dry_run and new_items:
         saved = save_recommendations(new_items, search_results, profile)
         msg = format_recommendation_message(new_items)
-        notify("Knowledge Agent 发现新内容", msg)
+        notify(f"🆕 发现 {len(new_items)} 条新内容", msg)
         logger.info(f"  已保存: {saved} 条")
     elif dry_run:
         logger.info("  [DRY RUN] 跳过保存和通知")
