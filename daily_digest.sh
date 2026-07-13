@@ -8,6 +8,7 @@ export PYTHONPATH="$PWD/src"
 # Step 0: 同步飞书文档（确保回顾基于最新内容）
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📡 飞书同步检查..." >> logs/daily_digest.log
 .venv/bin/python -c "
+import logging; logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
 from skills.feishu_skill import sync_feishu_sources
 stats = sync_feishu_sources()
 if stats['new'] + stats['updated'] > 0:
@@ -15,5 +16,8 @@ if stats['new'] + stats['updated'] > 0:
 " >> logs/daily_digest.log 2>&1 || true
 
 # Step 1: 发送每日精选
-.venv/bin/python -c "from skills.daily_digest_skill import send_daily_digest; send_daily_digest()" >> logs/daily_digest.log 2>&1
+.venv/bin/python -c "
+import logging; logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
+from skills.daily_digest_skill import send_daily_digest; send_daily_digest()
+" >> logs/daily_digest.log 2>&1
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 每日汇总推送完成" >> logs/daily_digest.log

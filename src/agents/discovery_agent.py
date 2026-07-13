@@ -84,6 +84,7 @@ def _generate_search_queries(profile: dict) -> list[str]:
 
 
 def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
+                         push: bool = False,
                          use_gap_signals: bool = False) -> dict:
     """执行一次完整的发现周期"""
     start = time.time()
@@ -170,7 +171,7 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
     logger.info("[6/6] 保存结果...")
     if not dry_run and new_items:
         saved = save_recommendations(new_items, search_results, profile)
-        if args.push:
+        if push:
             msg = format_recommendation_message(new_items)
             notify(f"🆕 发现 {len(new_items)} 条新内容", msg)
         else:
@@ -340,12 +341,12 @@ def main():
     if args.dry_run:
         logger.info("DRY RUN 模式 — 不会保存或推送")
         _run_discovery_cycle(dry_run=True, fetch_content=args.fetch_content,
-                            use_gap_signals=args.use_gap_signals)
+                            use_gap_signals=args.use_gap_signals, push=args.push)
         return
 
     if args.run:
         _run_discovery_cycle(dry_run=False, fetch_content=args.fetch_content,
-                            use_gap_signals=args.use_gap_signals)
+                            use_gap_signals=args.use_gap_signals, push=args.push)
         return
 
     if args.daemon:
@@ -353,7 +354,7 @@ def main():
         while _running:
             try:
                 _run_discovery_cycle(dry_run=False, fetch_content=args.fetch_content,
-                                    use_gap_signals=args.use_gap_signals)
+                                    use_gap_signals=args.use_gap_signals, push=args.push)
             except Exception as e:
                 logger.error(f"发现周期异常: {e}", exc_info=True)
             if _running:
