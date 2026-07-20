@@ -78,13 +78,6 @@ def process(source: str) -> dict:
     else:
         print(f"❌ 飞书写入失败: {result}")
 
-    # Obsidian vault 写入（后台，不影响主流程）
-    try:
-        from skills.obsidian_skill import write_to_vault
-        write_to_vault(record)
-    except Exception:
-        pass
-
     # ── 6. 同步写入 SQLite ──
     _save_to_sqlite(record)
 

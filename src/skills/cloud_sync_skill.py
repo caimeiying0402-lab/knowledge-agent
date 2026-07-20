@@ -211,6 +211,65 @@ def _run_etl_url(url: str) -> dict | None:
 
 # ── 主流程 ──────────────────────────────────────────────────────
 
+def sync_feedback() -> int:
+    """从 Worker 同步 Web 门户的用户反馈到本地 SQLite"""
+    if not CF_WORKER_URL or not CF_SYNC_API_KEY:
+        return 0
+
+    # 读取上次同步时间戳
+    cursor_file = BASE_DIR / "data" / ".feedback_cursor"
+    since = 0
+    if cursor_file.exists():
+        try:
+            since = int(cursor_file.read_text().strip())
+        except (ValueError, OSError):
+            since = 0
+
+    try:
+        resp = requests.get(
+            f"{CF_WORKER_URL}/api/feedback",
+            params={"since": since, "limit": 200},
+            headers=_headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        feedback_list = resp.json().get("feedback", [])
+    except Exception as e:
+        logger.warning(f"拉取反馈失败: {e}")
+        return 0
+
+    if not feedback_list:
+        return 0
+
+    # 写入本地 user_interactions 表
+    from knowledge.sqlite_store import insert_interaction
+    saved = 0
+    max_ts = since
+    action_map = {"like": "liked", "dislike": "disliked"}
+
+    for fb in feedback_list:
+        interaction_type = action_map.get(fb.get("action", ""), fb.get("action", ""))
+        record = {
+            "item_id": fb.get("item_id", ""),
+            "interaction_type": interaction_type,
+            "context": f"web:{fb.get('source', 'web')}",
+            "created_at": fb.get("created_at", 0),
+        }
+        if insert_interaction(record):
+            saved += 1
+        if fb.get("created_at", 0) > max_ts:
+            max_ts = fb["created_at"]
+
+    # 更新游标
+    if max_ts > since:
+        cursor_file.parent.mkdir(parents=True, exist_ok=True)
+        cursor_file.write_text(str(max_ts))
+
+    if saved:
+        logger.info(f"反馈同步: {saved} 条 (since={since})")
+    return saved
+
+
 def sync_once():
     """执行一次同步：健康检查 → 拉取 → 处理 → 标记 → 统计"""
     if not CF_WORKER_URL or not CF_SYNC_API_KEY:
@@ -359,6 +418,12 @@ def sync_once():
         f"分类: text={success_types['text']} link={success_types['link']} "
         f"image={success_types['image']} voice={success_types['voice']}"
     )
+
+    # ── 同步 Web 门户反馈 ──
+    try:
+        sync_feedback()
+    except Exception as e:
+        logger.debug(f"反馈同步跳过: {e}")
 
     return len(processed_ids)
 

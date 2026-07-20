@@ -1,12 +1,15 @@
-"""Knowledge Agent Dashboard — 作品集展示网站"""
+"""Knowledge Agent Dashboard — 作品集展示网站 + Agent 手动触发"""
 import json
 import logging
 import os
+import subprocess
 import sys
+import threading
 import time
+import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 # 确保 src 在路径中
 _BASE_DIR = Path(__file__).parent.parent.parent
@@ -223,6 +226,116 @@ def api_system():
         "db_size_mb": round(db_size / 1024 / 1024, 2),
         "chroma_size_mb": round(chroma_size / 1024 / 1024, 2),
         "project_root": str(_BASE_DIR),
+    })
+
+
+# ── Agent 手动触发 ──
+
+_jobs: dict[str, dict] = {}  # job_id → {status, output, error, started_at, finished_at}
+_job_lock = threading.Lock()
+
+AGENT_CONFIG = {
+    "career": {
+        "name": "Career Agent",
+        "description": "岗位搜索+匹配评分+简历定制",
+        "command": [
+            sys.executable, "-m", "agents.career_agent",
+            "--search-only", "--engine", "cdp", "--platform", "both", "--max-results", "15"
+        ],
+        "timeout": 300,
+    },
+    "recommendation": {
+        "name": "Knowledge Recommendation",
+        "description": "知识库回顾+五维打分+MMR精选TOP5",
+        "command": [sys.executable, "-m", "agents.recommendation_agent", "--run"],
+        "timeout": 120,
+    },
+    "digest": {
+        "name": "Daily Digest",
+        "description": "飞书同步+知识库回顾+网络发现 → 邮件推送",
+        "command": [
+            sys.executable, "-c",
+            "import logging; logging.basicConfig(level=logging.INFO, "
+            "format='%(asctime)s [%(name)s] %(levelname)s: %(message)s');"
+            "from skills.daily_digest_skill import send_daily_digest; "
+            "send_daily_digest()"
+        ],
+        "timeout": 120,
+    },
+}
+
+
+def _run_agent_job(job_id: str, agent_id: str):
+    config = AGENT_CONFIG[agent_id]
+    with _job_lock:
+        _jobs[job_id]["status"] = "running"
+        _jobs[job_id]["output"] = f"[{time.strftime('%H:%M:%S')}] 开始执行: {config['name']}...\n"
+
+    try:
+        proc = subprocess.run(
+            config["command"],
+            capture_output=True, text=True,
+            timeout=config["timeout"],
+            cwd=str(_BASE_DIR),
+            env={**os.environ, "PYTHONPATH": str(_BASE_DIR / "src")},
+        )
+        output = proc.stdout + proc.stderr
+        with _job_lock:
+            _jobs[job_id]["output"] += output
+            _jobs[job_id]["status"] = "done" if proc.returncode == 0 else "failed"
+            _jobs[job_id]["exit_code"] = proc.returncode
+            _jobs[job_id]["finished_at"] = time.time()
+            status_text = "完成" if proc.returncode == 0 else f"失败 (exit={proc.returncode})"
+            _jobs[job_id]["output"] += f"\n[{time.strftime('%H:%M:%S')}] {status_text}\n"
+    except subprocess.TimeoutExpired:
+        with _job_lock:
+            _jobs[job_id]["status"] = "timeout"
+            _jobs[job_id]["output"] += f"\n[{time.strftime('%H:%M:%S')}] 超时 ({config['timeout']}s)\n"
+            _jobs[job_id]["finished_at"] = time.time()
+    except Exception as e:
+        with _job_lock:
+            _jobs[job_id]["status"] = "error"
+            _jobs[job_id]["output"] += f"\n错误: {e}\n"
+            _jobs[job_id]["finished_at"] = time.time()
+
+
+@app.route("/api/run/<agent_id>", methods=["POST"])
+def api_run_agent(agent_id):
+    if agent_id not in AGENT_CONFIG:
+        return jsonify({"error": f"Unknown agent: {agent_id}"}), 404
+
+    job_id = uuid.uuid4().hex[:12]
+    with _job_lock:
+        _jobs[job_id] = {
+            "id": job_id,
+            "agent": agent_id,
+            "status": "pending",
+            "output": "",
+            "started_at": time.time(),
+            "finished_at": None,
+            "exit_code": None,
+        }
+
+    t = threading.Thread(target=_run_agent_job, args=(job_id, agent_id), daemon=True)
+    t.start()
+
+    return jsonify({"job_id": job_id, "agent": agent_id, "status": "started"})
+
+
+@app.route("/api/run/<job_id>/status")
+def api_run_status(job_id):
+    with _job_lock:
+        job = _jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "id": job["id"],
+        "agent": job["agent"],
+        "status": job["status"],
+        "output": job["output"],
+        "exit_code": job["exit_code"],
+        "started_at": job["started_at"],
+        "finished_at": job["finished_at"],
     })
 
 

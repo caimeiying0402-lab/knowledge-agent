@@ -140,6 +140,37 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
     except Exception as e:
         logger.debug(f"固定源扫描失败: {e}")
 
+    # 3.7 AI 内容生成（每天一篇原创文章）
+    logger.info("[3.7/7] AI 原创内容生成...")
+    try:
+        from skills.claude_content_skill import generate_daily_article, get_recent_generated_titles
+        recent_gen = get_recent_generated_titles(days=1)
+        if recent_gen:
+            logger.info(f"  今天已生成过，跳过（{recent_gen[0][:40]}）")
+        else:
+            ai_article = generate_daily_article(queries, recent_titles=recent_gen)
+            if ai_article:
+                # 保存到 SQLite + Chroma（复用 main.py 的存储逻辑）
+                from skills.sqlite_skill import save_to_sqlite
+                if save_to_sqlite(ai_article):
+                    import threading
+                    from skills.embedding_skill import embed_record
+                    from knowledge.chroma_store import add_to_chroma
+                    threading.Thread(
+                        target=lambda: _save_ai_embedding(ai_article),
+                        daemon=True,
+                    ).start()
+                # 加入搜索结果参与评分推送
+                search_results.append({
+                    "title": ai_article["title"],
+                    "url": ai_article["source_path"],
+                    "snippet": ai_article["summary"],
+                    "source_query": "AI原创",
+                })
+                logger.info(f"  AI 生成: {ai_article['title'][:50]}")
+    except Exception as e:
+        logger.debug(f"AI 内容生成失败: {e}")
+
     if not search_results:
         logger.info("无搜索结果，周期结束")
         return {"discovered": 0, "queries": queries}
@@ -191,6 +222,19 @@ def _run_discovery_cycle(dry_run: bool = False, fetch_content: bool = False,
         "profile": profile,
         "elapsed": round(elapsed, 1),
     }
+
+
+def _save_ai_embedding(record: dict):
+    """后台保存 AI 生成内容的 embedding"""
+    try:
+        from skills.embedding_skill import embed_record
+        from knowledge.chroma_store import add_to_chroma
+        embedding = embed_record(record)
+        add_to_chroma(record, embedding)
+        from knowledge.sqlite_store import mark_embedded
+        mark_embedded(record["id"])
+    except Exception as e:
+        logger.debug(f"AI 内容 embedding 失败: {e}")
 
 
 def _load_gap_signals() -> list[str]:

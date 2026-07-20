@@ -235,7 +235,7 @@ def notify_email(title: str, body: str) -> bool:
     notify_to = os.getenv("NOTIFY_EMAIL", smtp_user)
 
     if not all([smtp_host, smtp_user, smtp_pass]):
-        logger.debug("SMTP 未配置，跳过邮件通知")
+        logger.warning("SMTP 未配置，跳过邮件通知")
         return False
 
     try:
@@ -259,7 +259,7 @@ def notify_email(title: str, body: str) -> bool:
         logger.info(f"邮件已发送: {title}")
         return True
     except Exception as e:
-        logger.debug(f"邮件发送失败: {e}")
+        logger.warning(f"邮件发送失败: {e}")
         return False
 
 

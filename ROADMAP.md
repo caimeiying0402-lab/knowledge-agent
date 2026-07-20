@@ -1,6 +1,6 @@
 # Personal AI OS — 项目进度看板
 
-> 最后更新：2026-07-01（Claude Code）
+> 最后更新：2026-07-20（Claude Code）
 > 反映实际完成状态
 
 ---
@@ -9,10 +9,12 @@
 
 | Agent | 完成度 | 状态 |
 |-------|--------|------|
-| Knowledge Agent | ~95% | 🟢 全链路完成 |
-| Job Agent | 5% | 🚧 开发规格书已完成，待实现 |
-| 自动记账 Agent | 0% | ❌ 已取消/延期 |
-| Rule Mining Agent | 0% | ⬜ 未启动 |
+| Knowledge Agent | ~95% | 全链路完成 |
+| Career Agent | 100% | 完成，每日 7:00 自动运行 |
+| Discovery Agent | ~85% | 搜索偶有波动（网络环境），RSS 固定源补位稳定 |
+| Recommendation Agent | ~90% | 代码完成，每日 8:00 自动运行 |
+| 自动记账 Agent | 0% | 已取消/延期 |
+| Rule Mining Agent | 0% | 未启动 |
 
 ---
 
@@ -22,7 +24,7 @@
 
 | 模块 | 状态 | 备注 |
 |------|------|------|
-| 企微 Worker 消息接收 | ✅ | v9, 7×24, D1+R2, 自定义域名 wechat.happymia.top |
+| 企微 Worker 消息接收 | ✅ | v9, 7x24, D1+R2, 自定义域名 wechat.happymia.top |
 | cloud_sync 本地同步 | ✅ | 智能轮询, URL自动展开, 图片OCR |
 | 微信客服轮询 | ⚠️ | 备用入口, 45009限流 |
 | 手动 CLI | ✅ | `python main.py` |
@@ -42,34 +44,50 @@
 | 模块 | 状态 | 备注 |
 |------|------|------|
 | 飞书多维表格 | ✅ | 结构化笔记展示 |
-| SQLite | ✅ | 31条, 本地真相源 |
-| Chroma 向量库 | ✅ | 24条向量化, ONNX embedding |
+| SQLite | ✅ | 50+条, 本地真相源 |
+| Chroma 向量库 | ✅ | 42条向量化, ONNX embedding |
 | RAG 检索 | ✅ | 向量+关键词混合 |
 
-> iCloud 链路已于 2026-06-28 移除，`icloud_skill.py` 已删除。
+### 推荐系统 (L4-L6)
 
----
+| 模块 | 状态 | 备注 |
+|------|------|------|
+| Discovery Agent | ✅ | ddgs 多引擎搜索 + RSS 固定源，每日 6:00/18:00 |
+| Recommendation Agent | ✅ | 五维打分 + MMR 精选，每日 8:00 |
+| Daily Digest | ✅ | 汇总推送 |
+| 知识缺口分析 | ✅ | Recommendation -> Discovery 联动 |
 
-## 三、当前阶段
-
-| 优先级 | 任务 | 状态 |
-|--------|------|------|
-| P3-1 | Job Agent 开发 | 🚧 规格书已出 (docs/JOB_AGENT_SPEC.md) |
-| P2 | Embedding 修复 | ⏸️ 暂缓 |
-
-### Job Agent 进度
+### Career Agent
 
 | 模块 | 状态 |
 |------|------|
-| `resume_profile.json` | ✅ 已生成，待人类review |
-| `docs/JOB_AGENT_SPEC.md` | ✅ 完整开发规格书 |
-| Phase 1: resume + match | ⬜ 待实现 |
-| Phase 2: job search + 反爬 | ⬜ 待实现 |
-| Phase 3: resume gen + greeting + delivery | ⬜ 待实现 |
-| Phase 4: 定时调度 | ⬜ 待实现 |
+| 简历解析 | ✅ |
+| BOSS直聘搜索 (CDP) | ✅ |
+| 猎聘搜索 | ✅ |
+| 匹配评分 (5维) | ✅ |
+| 个性化简历生成 | ✅ |
+| 打招呼语生成 | ✅ |
+| 企微推送 | ✅ |
+| 定时调度 (launchd 7:00) | ✅ |
+
+---
+
+## 三、已知问题
+
+| 问题 | 影响 | 状态 |
+|------|------|------|
+| ddgs 搜索受网络环境影响 | 部分查询可能返回 0 结果 | 已加重试 + RSS 补位 |
+| Bing HTML/Playwright 封锁 | 无法直接抓取 Bing | ddgs 内部已聚合 Bing，无需单独对接 |
+| 微信客服 45009 限流 | 备用入口基本不可用 | 主线走企微 Worker |
+
+---
 
 ## 四、后续
 
 | 优先级 | 任务 |
 |--------|------|
-| P3-2 | Discovery Agent: 规则挖掘 |
+| P1 | AI 词云画像系统 |
+| P1 | 微信工作台主动推送推荐 |
+| P1 | 飞书数据源读取 |
+| P2 | 豆瓣书影推荐联动 |
+| P3 | Rule Mining Agent |

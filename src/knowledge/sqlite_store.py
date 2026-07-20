@@ -540,6 +540,20 @@ def get_recently_recommended_item_ids(days: int = 7) -> set[str]:
     return {r["item_id"] for r in rows}
 
 
+def get_recently_recommended_titles(days: int = 30) -> list[dict]:
+    """获取最近推荐条目的标题和摘要，用于语义去重"""
+    conn = _get_conn()
+    cutoff = int(__import__("time").time()) - days * 86400
+    rows = conn.execute(
+        """SELECT DISTINCT ki.title, ki.summary, ki.category
+           FROM internal_recommendations ir
+           JOIN knowledge_items ki ON ir.item_id = ki.id
+           WHERE ir.created_at >= ?""",
+        (cutoff,),
+    ).fetchall()
+    return [{"title": r["title"], "summary": r["summary"] or "", "category": r["category"]} for r in rows]
+
+
 def get_items_by_ids(item_ids: list[str]) -> list[dict]:
     if not item_ids:
         return []

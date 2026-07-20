@@ -41,18 +41,65 @@ def score_results(interest_profile: dict, search_results: list[dict]) -> list[di
 
 
 def deduplicate(results: list[dict]) -> list[dict]:
-    """过滤已在知识库或推荐记录中存在的URL"""
+    """过滤已在知识库或推荐记录中存在的URL + 标题相似度去重"""
+    # 1. URL 去重
     filtered = []
     for r in results:
         url = r.get("url", "")
         if not url:
             continue
         if is_url_already_known(url):
-            logger.info(f"跳过已知内容: {url[:80]}")
+            logger.info(f"跳过已知URL: {url[:80]}")
             continue
         filtered.append(r)
-    logger.info(f"去重: {len(results)} 条 → {len(filtered)} 条新内容")
+
+    # 2. 标题相似度去重（与已入库的标题比较）
+    try:
+        from knowledge.sqlite_store import _get_conn
+        conn = _get_conn()
+        known = conn.execute(
+            "SELECT DISTINCT title FROM knowledge_items ORDER BY created_at DESC LIMIT 200"
+        ).fetchall()
+        known_titles = [r["title"] for r in known if r["title"]]
+    except Exception:
+        known_titles = []
+
+    if known_titles:
+        deduped = []
+        for item in filtered:
+            if _is_title_duplicate(item.get("title", ""), known_titles):
+                logger.info(f"跳过相似标题: {item.get('title', '')[:60]}")
+                continue
+            deduped.append(item)
+        logger.info(f"去重: {len(results)} 条 → {len(deduped)} 条新内容 (URL+标题)")
+        return deduped
+
+    logger.info(f"去重: {len(results)} 条 → {len(filtered)} 条新内容 (仅URL)")
     return filtered
+
+
+def _is_title_duplicate(title: str, known_titles: list[str], threshold: float = 0.75) -> bool:
+    """检查标题是否与已知标题高度相似（基于词重叠）"""
+    if not title or not known_titles:
+        return False
+
+    def _tokenize(text: str) -> set[str]:
+        chars = list(text.replace(" ", ""))
+        bigrams = {"".join(chars[i:i+2]) for i in range(len(chars)-1)}
+        return bigrams | set(chars)
+
+    t1 = _tokenize(title)
+    if len(t1) < 3:
+        return False
+
+    for kt in known_titles:
+        t2 = _tokenize(kt)
+        if len(t2) < 3:
+            continue
+        overlap = len(t1 & t2) / min(len(t1), len(t2))
+        if overlap > threshold:
+            return True
+    return False
 
 
 def _build_scoring_message(profile: dict, results: list[dict]) -> str:

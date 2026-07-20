@@ -25,6 +25,7 @@ sys.path.insert(0, str(_BASE_DIR / "src"))
 from knowledge.sqlite_store import (
     get_recent_items,
     get_recently_recommended_item_ids,
+    get_recently_recommended_titles,
     get_internal_recommendations,
     get_internal_recommendation_stats,
 )
@@ -48,7 +49,49 @@ logging.basicConfig(
 logger = logging.getLogger("recommendation_agent")
 
 
-def _run_recommendation_cycle(dry_run: bool = False, count: int = 5) -> dict:
+def _dedupe_similar_titles(candidates: list[dict], recent_titles: list[dict], threshold: float = 0.7) -> list[dict]:
+    """过滤与近期已推荐标题高度相似的候选项（基于词重叠率）"""
+    if not recent_titles:
+        return candidates
+
+    def _tokenize(text: str) -> set[str]:
+        # 简单2-gram + 单字符分词（中文友好）
+        chars = list(text.replace(" ", ""))
+        bigrams = {"".join(chars[i:i+2]) for i in range(len(chars)-1)}
+        unigrams = set(chars)
+        return bigrams | unigrams
+
+    recent_tokens_list = [_tokenize(r["title"]) for r in recent_titles]
+    filtered = []
+    removed = 0
+
+    for item in candidates:
+        item_tokens = _tokenize(item.get("title", ""))
+        if not item_tokens:
+            filtered.append(item)
+            continue
+
+        is_duplicate = False
+        for rt in recent_tokens_list:
+            if not rt:
+                continue
+            overlap = len(item_tokens & rt) / min(len(item_tokens), len(rt))
+            if overlap > threshold:
+                is_duplicate = True
+                break
+
+        if is_duplicate:
+            logger.debug(f"语义去重: {item.get('title', '')[:50]} (相似度>{threshold})")
+            removed += 1
+        else:
+            filtered.append(item)
+
+    if removed:
+        logger.info(f"  语义去重: 移除 {removed} 条相似内容")
+    return filtered
+
+
+def _run_recommendation_cycle(dry_run: bool = False, count: int = 5, push: bool = False) -> dict:
     """执行一次完整的推荐周期"""
     start = time.time()
     batch_id = str(uuid.uuid4())[:8]
@@ -71,10 +114,14 @@ def _run_recommendation_cycle(dry_run: bool = False, count: int = 5) -> dict:
     # 3. 获取候选条目
     logger.info("[3/7] 召回候选条目...")
     all_items = get_recent_items(100)
-    recently_rec_ids = get_recently_recommended_item_ids(days=7)
+    recently_rec_ids = get_recently_recommended_item_ids(days=30)
 
     candidates = [item for item in all_items if item["id"] not in recently_rec_ids]
-    logger.info(f"  总条目: {len(all_items)}, 7天内已推荐: {len(recently_rec_ids)}, 候选: {len(candidates)}")
+    logger.info(f"  总条目: {len(all_items)}, 30天内已推荐: {len(recently_rec_ids)}, 候选: {len(candidates)}")
+
+    # 语义去重：过滤与近期已推荐标题高度相似的候选项
+    recent_titles = get_recently_recommended_titles(days=30)
+    candidates = _dedupe_similar_titles(candidates, recent_titles)
 
     if len(candidates) < count:
         logger.info(f"  候选不足，补充最近已推荐的条目")
@@ -115,7 +162,7 @@ def _run_recommendation_cycle(dry_run: bool = False, count: int = 5) -> dict:
     logger.info("[7/7] 保存...")
     if not dry_run:
         saved = save_internal_recommendations(selected, batch_id, "scheduled", gap_signals)
-        if args.push:
+        if push:
             msg = format_internal_recommendation_message(selected)
             notify(f"📖 知识库精华回顾 · {len(selected)} 篇", msg)
         else:
@@ -292,11 +339,11 @@ def main():
 
     if args.dry_run:
         logger.info("DRY RUN 模式 — 不会保存或推送")
-        _run_recommendation_cycle(dry_run=True, count=args.count)
+        _run_recommendation_cycle(dry_run=True, count=args.count, push=args.push)
         return
 
     # 默认行为
-    _run_recommendation_cycle(dry_run=False, count=args.count)
+    _run_recommendation_cycle(dry_run=False, count=args.count, push=args.push)
 
 
 if __name__ == "__main__":

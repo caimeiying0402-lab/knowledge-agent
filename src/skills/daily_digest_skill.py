@@ -5,10 +5,14 @@
 """
 import json
 import logging
+import os
 import re
 import yaml
 from pathlib import Path
 from skills.delivery_skill import notify_wechat_kf, notify_email
+
+import requests
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +479,30 @@ def _get_source_records(conn) -> list[dict]:
 
 # ── 主入口 ──
 
+def _push_digest_to_portal(items: list[dict]) -> bool:
+    """将 digest 结构化数据推送到 Cloudflare Worker，供 Web 门户展示"""
+    load_dotenv(BASE_DIR / "config" / ".env")
+    worker_url = os.getenv("CF_WORKER_URL", "").rstrip("/")
+    api_key = os.getenv("CF_SYNC_API_KEY", "")
+    if not worker_url or not api_key:
+        logger.debug("CF_WORKER_URL 或 CF_SYNC_API_KEY 未配置，跳过门户推送")
+        return False
+
+    try:
+        resp = requests.post(
+            f"{worker_url}/api/digest/push",
+            json={"items": items},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        logger.info(f"门户 digest 推送成功: {len(items)} 条")
+        return True
+    except Exception as e:
+        logger.warning(f"门户 digest 推送失败: {e}")
+        return False
+
+
 def send_daily_digest() -> bool:
     from knowledge.sqlite_store import (
         get_recommendations, _get_conn,
@@ -598,14 +626,73 @@ def send_daily_digest() -> bool:
 
     body = "\n".join(lines)
 
+    # 收集结构化数据用于 Web 门户展示
+    portal_items = []
+    # 1) 外部发现：有 URL 和评分的推荐
+    for r in ext_recent[:5]:
+        score = r.get("score", 0)
+        portal_items.append({
+            "id": r.get("id", r.get("url", "")),
+            "title": r.get("title", "")[:120],
+            "url": r.get("url", ""),
+            "score": score / 100.0 if score > 1 else score,
+            "reason": r.get("reason", "")[:200],
+            "category": r.get("interest_category", r.get("category_match", "")),
+        })
+    # 2) 知识库精选片段（引用上面已处理的变量）
+    if source_records:
+        _wiki_records = [r for r in source_records if r["url_type"] in ("wiki", "docx", "doc")]
+        _bitable_records = [r for r in source_records if r["url_type"] == "bitable"]
+        _all_chunks = []
+        for rec in _wiki_records:
+            chunks = _chunk_document(rec["raw_content"], rec["title"], source_path=rec["source_path"])
+            for ch in chunks:
+                ch["source_title"] = rec["title"]
+                ch["source_path"] = rec["source_path"]
+            _all_chunks.extend(chunks)
+        if _all_chunks:
+            _scored = _score_chunks(_all_chunks, profile)
+            _top_chunks = _scored[:MAX_CHUNKS]
+            seen_titles = set()
+            for ch in _top_chunks:
+                t = ch.get("title", "")[:120]
+                if t in seen_titles:
+                    continue
+                seen_titles.add(t)
+                portal_items.append({
+                    "id": (ch.get("source_path", "") + "#" + t)[:200],
+                    "title": t,
+                    "url": ch.get("source_path", ""),
+                    "score": ch.get("score", 0),
+                    "reason": ", ".join(ch.get("matched_keywords", [])[:3]),
+                    "category": "知识库回顾",
+                })
+        for rec in _bitable_records[:5]:
+            portal_items.append({
+                "id": rec.get("id", ""),
+                "title": rec.get("title", "")[:120],
+                "url": rec.get("source_path", ""),
+                "score": 0.5,
+                "reason": rec.get("category", ""),
+                "category": "知识条目",
+            })
+
     # 优先企微，超过2000字或企微失败走邮件
+    pushed = False
     if len(body) <= 2000:
         if notify_wechat_kf("📋 AIOS 每日精选", body):
             logger.info("每日汇总推送成功（微信客服）")
-            return True
+            pushed = True
 
-    if notify_email("📋 AIOS 每日精选", body):
-        logger.info(f"每日汇总推送成功（邮件，{len(body)}字）")
-        return True
+    if not pushed:
+        if notify_email("📋 AIOS 每日精选", body):
+            logger.info(f"每日汇总推送成功（邮件，{len(body)}字）")
+            pushed = True
 
-    return False
+    # 推送到 Web 门户
+    if portal_items:
+        _push_digest_to_portal(portal_items)
+
+    if not pushed:
+        logger.warning("每日汇总推送失败：微信和邮件均未成功")
+    return pushed

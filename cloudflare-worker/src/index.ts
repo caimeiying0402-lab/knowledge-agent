@@ -441,6 +441,173 @@ async function handleNotify(req: Request, env: Env): Promise<Response> {
   }
 }
 
+const PORTAL_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>AIOS</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f0f0f;color:#e0e0e0;max-width:480px;margin:0 auto;min-height:100vh}
+header{padding:16px 20px 8px;border-bottom:1px solid #222}
+header h1{font-size:20px;font-weight:700;letter-spacing:-0.3px}
+header p{font-size:12px;color:#666;margin-top:4px}
+section{padding:16px 20px}
+section h2{font-size:15px;font-weight:600;margin-bottom:12px;color:#aaa}
+/* Input area */
+#input-area textarea{width:100%;height:100px;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px;color:#e0e0e0;font-size:14px;resize:vertical;font-family:inherit}
+#input-area textarea:focus{outline:none;border-color:#555}
+#input-area .hint{font-size:11px;color:#555;margin-top:6px}
+#input-area button{width:100%;margin-top:10px;padding:12px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
+#input-area button:active{background:#1d4ed8}
+#input-area button:disabled{background:#333;color:#666}
+#status{font-size:12px;margin-top:8px;min-height:18px;text-align:center}
+#status.ok{color:#22c55e}
+#status.err{color:#ef4444}
+/* Feed */
+.feed-item{background:#1a1a1a;border-radius:8px;padding:14px;margin-bottom:10px}
+.feed-item .title{font-size:15px;font-weight:600;line-height:1.4;margin-bottom:4px}
+.feed-item .title a{color:#e0e0e0;text-decoration:none}
+.feed-item .meta{font-size:11px;color:#555;margin-bottom:8px}
+.feed-item .reason{font-size:12px;color:#888;line-height:1.5;margin-bottom:10px}
+.feed-item .actions{display:flex;gap:8px}
+.feed-item .actions button{flex:1;padding:8px;border-radius:6px;border:1px solid #333;background:transparent;color:#888;font-size:13px;cursor:pointer}
+.feed-item .actions button.liked{background:#22c55e20;border-color:#22c55e;color:#22c55e}
+.feed-item .actions button.disliked{background:#ef444420;border-color:#ef4444;color:#ef4444}
+/* Empty state */
+.empty{text-align:center;padding:40px 20px;color:#555}
+.empty .icon{font-size:48px;margin-bottom:12px}
+/* Tabs */
+.tabs{display:flex;border-bottom:1px solid #222}
+.tabs button{flex:1;padding:12px;background:none;border:none;color:#666;font-size:14px;cursor:pointer;border-bottom:2px solid transparent}
+.tabs button.active{color:#e0e0e0;border-bottom-color:#2563eb}
+.tab-content{display:none}
+.tab-content.active{display:block}
+</style>
+</head>
+<body>
+<header>
+  <h1>AIOS</h1>
+  <p>你的个人 AI 操作系统</p>
+</header>
+
+<div class="tabs">
+  <button class="active" onclick="switchTab('ingest')">录入</button>
+  <button onclick="switchTab('feed')">今日知识</button>
+</div>
+
+<section id="tab-ingest" class="tab-content active">
+  <h2>存入知识库</h2>
+  <div id="input-area">
+    <textarea id="content-input" placeholder="粘贴文章链接或文本内容..."></textarea>
+    <div class="hint">支持 URL 链接和纯文本，提交后自动结构化入库</div>
+    <button id="submit-btn" onclick="submitContent()">提交</button>
+    <div id="status"></div>
+  </div>
+</section>
+
+<section id="tab-feed" class="tab-content">
+  <h2>今日知识推荐</h2>
+  <div id="feed-container"><div class="empty"><div class="icon">📭</div>加载中...</div></div>
+</section>
+
+<script>
+const API = '';
+
+async function submitContent() {
+  const btn = document.getElementById('submit-btn');
+  const input = document.getElementById('content-input');
+  const status = document.getElementById('status');
+  const content = input.value.trim();
+  if (!content) return;
+
+  btn.disabled = true;
+  btn.textContent = '提交中...';
+  status.className = '';
+  status.textContent = '';
+
+  try {
+    const resp = await fetch(API + '/api/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      status.className = 'ok';
+      status.textContent = data.type === 'url' ? '链接已提交，稍后查看飞书' : '文本已提交，稍后查看飞书';
+      input.value = '';
+    } else {
+      status.className = 'err';
+      status.textContent = data.error || '提交失败';
+    }
+  } catch(e) {
+    status.className = 'err';
+    status.textContent = '网络错误，请重试';
+  }
+  btn.disabled = false;
+  btn.textContent = '提交';
+  setTimeout(() => { status.className = ''; status.textContent = ''; }, 3000);
+}
+
+async function loadFeed() {
+  const container = document.getElementById('feed-container');
+  try {
+    const resp = await fetch(API + '/api/digest');
+    const data = await resp.json();
+    if (data.empty || !data.items.length) {
+      container.innerHTML = '<div class="empty"><div class="icon">☕</div>今天还没有推荐，稍后再来看看</div>';
+      return;
+    }
+    container.innerHTML = data.items.map((item, i) => \`
+      <div class="feed-item">
+        <div class="title">\${item.url ? \`<a href="\${esc(item.url)}" target="_blank">\${esc(item.title)}</a>\` : esc(item.title)}</div>
+        <div class="meta">\${esc(item.category || '')} · \${item.score ? Math.round(item.score * 100) + '%' : ''}</div>
+        \${item.reason ? \`<div class="reason">\${esc(item.reason)}</div>\` : ''}
+        <div class="actions">
+          <button id="like-\${i}" onclick="feedback('\${esc(item.id || item.url || '')}', 'like', \${i})">👍 有用</button>
+          <button id="dislike-\${i}" onclick="feedback('\${esc(item.id || item.url || '')}', 'dislike', \${i})">👎 不感兴趣</button>
+        </div>
+      </div>
+    \`).join('');
+  } catch(e) {
+    container.innerHTML = '<div class="empty"><div class="icon">⚠️</div>加载失败</div>';
+  }
+}
+
+async function feedback(itemId, action, idx) {
+  try {
+    await fetch(API + '/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, action })
+    });
+    const likeBtn = document.getElementById('like-' + idx);
+    const dislikeBtn = document.getElementById('dislike-' + idx);
+    if (action === 'like') { likeBtn.classList.add('liked'); dislikeBtn.classList.remove('disliked'); }
+    else { dislikeBtn.classList.add('disliked'); likeBtn.classList.remove('liked'); }
+  } catch(e) {}
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.tabs button').forEach((b, i) => {
+    b.classList.toggle('active', i === (tab === 'ingest' ? 0 : 1));
+  });
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  if (tab === 'feed') loadFeed();
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
+`;
+
 export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     await discoveryScheduled(event, env, ctx);
@@ -458,7 +625,118 @@ export default {
       if(p==="/api/stats"&&m==="GET")return handleStats(req,env);
       if(p==="/api/notify"&&m==="POST")return handleNotify(req,env);
       if(p.startsWith("/api/discovery/"))return discoveryFetch(req,env);
+      if(p==="/api/ingest"&&m==="POST")return handleIngest(req,env);
+      if(p==="/api/digest"&&m==="GET")return handleDigestGet(req,env);
+      if(p==="/api/digest/push"&&m==="POST")return handleDigestPush(req,env);
+      if(p==="/api/feedback"&&m==="POST")return handleFeedbackPost(req,env);
+      if(p==="/api/feedback"&&m==="GET")return handleFeedbackGet(req,env);
+      if(p==="/"&&m==="GET")return handlePortal();
       return new Response("nf",{status:404});
     }catch(e){console.error(`[fatal] ${e}`);return new Response("err",{status:500});}
   },
 };
+
+// ── AIOS 门户 API ──
+
+async function handleIngest(req: Request, env: Env): Promise<Response> {
+  try {
+    const { content } = await req.json() as any;
+    if (!content || typeof content !== "string" || content.trim().length === 0) {
+      return Response.json({ error: "content required" }, { status: 400 });
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const trimmed = content.trim();
+    const isUrl = /^https?:\/\/\S+/.test(trimmed);
+    if (isUrl) {
+      await env.DB.prepare(
+        `INSERT INTO messages(msg_type, from_user, content, url, created_at) VALUES('link','web','',?,?)`
+      ).bind(trimmed, now).run();
+    } else {
+      await env.DB.prepare(
+        `INSERT INTO messages(msg_type, from_user, content, created_at) VALUES('text','web',?,?)`
+      ).bind(trimmed, now).run();
+    }
+    console.log(`[ingest] ${isUrl ? 'URL' : 'text'} (${trimmed.length}B)`);
+    return Response.json({ ok: true, type: isUrl ? "url" : "text" });
+  } catch (e) {
+    console.error(`[ingest] ${e}`);
+    return Response.json({ error: "internal error" }, { status: 500 });
+  }
+}
+
+async function handleDigestGet(req: Request, env: Env): Promise<Response> {
+  const today = new Date().toISOString().slice(0, 10);
+  const row = await env.DB.prepare(
+    `SELECT content, created_at FROM digests WHERE date = ? ORDER BY id DESC LIMIT 1`
+  ).bind(today).first();
+  if (!row) {
+    const latest = await env.DB.prepare(
+      `SELECT content, date, created_at FROM digests ORDER BY id DESC LIMIT 1`
+    ).first();
+    if (!latest) return Response.json({ items: [], date: today, empty: true });
+    return Response.json({ items: JSON.parse((latest as any).content), date: (latest as any).date });
+  }
+  return Response.json({ items: JSON.parse((row as any).content), date: today });
+}
+
+async function handleDigestPush(req: Request, env: Env): Promise<Response> {
+  if (!chkApi(req, env.SYNC_API_KEY)) return new Response("unauth", { status: 401 });
+  try {
+    const { items } = await req.json() as any;
+    if (!items || !Array.isArray(items)) {
+      return Response.json({ error: "items array required" }, { status: 400 });
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO digests(date, content, created_at) VALUES(?, ?, ?)`
+    ).bind(today, JSON.stringify(items), now).run();
+    console.log(`[digest/push] ${items.length} items for ${today}`);
+    return Response.json({ ok: true, count: items.length });
+  } catch (e) {
+    console.error(`[digest/push] ${e}`);
+    return Response.json({ error: "internal error" }, { status: 500 });
+  }
+}
+
+async function handleFeedbackPost(req: Request, env: Env): Promise<Response> {
+  try {
+    const { item_id, action } = await req.json() as any;
+    if (!item_id || !action || !["like", "dislike"].includes(action)) {
+      return Response.json({ error: "item_id and action (like/dislike) required" }, { status: 400 });
+    }
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO feedback(item_id, action, source, created_at) VALUES(?, ?, 'web', ?)`
+    ).bind(item_id, action, now).run();
+    console.log(`[feedback] ${action} on ${item_id}`);
+    return Response.json({ ok: true });
+  } catch (e) {
+    console.error(`[feedback] ${e}`);
+    return Response.json({ error: "internal error" }, { status: 500 });
+  }
+}
+
+async function handleFeedbackGet(req: Request, env: Env): Promise<Response> {
+  if (!chkApi(req, env.SYNC_API_KEY)) return new Response("unauth", { status: 401 });
+  const url = new URL(req.url);
+  const since = parseInt(url.searchParams.get("since") || "0");
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "200"), 500);
+  let rows;
+  if (since > 0) {
+    rows = await env.DB.prepare(
+      `SELECT * FROM feedback WHERE created_at > ? ORDER BY id ASC LIMIT ?`
+    ).bind(since, limit).all();
+  } else {
+    rows = await env.DB.prepare(
+      `SELECT * FROM feedback ORDER BY id ASC LIMIT ?`
+    ).bind(limit).all();
+  }
+  return Response.json({ feedback: rows.results });
+}
+
+async function handlePortal(): Promise<Response> {
+  return new Response(PORTAL_HTML, {
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" },
+  });
+}

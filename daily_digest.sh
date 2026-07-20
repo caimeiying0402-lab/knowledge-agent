@@ -5,6 +5,11 @@ cd "$(dirname "$0")"
 source .venv/bin/activate
 export PYTHONPATH="$PWD/src"
 
+# 加载环境变量（SMTP、飞书等）
+set -a
+source config/.env
+set +a
+
 # Step 0: 同步飞书文档（确保回顾基于最新内容）
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📡 飞书同步检查..." >> logs/daily_digest.log
 .venv/bin/python -c "

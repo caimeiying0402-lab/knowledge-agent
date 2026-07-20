@@ -33,6 +33,7 @@
   <button class="nav-tab" data-tab="recommendations">Recommendation Feed</button>
   <button class="nav-tab" data-tab="explorer">Knowledge Explorer</button>
   <button class="nav-tab" data-tab="api">API Demo</button>
+  <button class="nav-tab" data-tab="agents">Agent Control</button>
 </div>
 
 <div class="container">
@@ -168,6 +169,38 @@
       <textarea id="api-search-input" placeholder='Enter a search query, e.g. "AI Agent"'>AI Agent</textarea>
       <button onclick="trySearchAPI()">Send Request</button>
       <div class="api-response" id="api-response" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- Tab 6: Agent Control -->
+  <div class="tab-content" id="tab-agents">
+    <h3>Agent 手动触发</h3>
+    <p style="color:var(--text-muted);margin-bottom:20px;">在页面点击按钮即可运行 Agent，无需打开终端。</p>
+
+    <div id="agent-cards" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
+      <div style="flex:1;min-width:240px;background:var(--bg-card);border-radius:8px;padding:20px;border:1px solid var(--border-color);">
+        <h4 style="margin:0 0 8px 0;">🔍 Career Agent</h4>
+        <p style="font-size:0.85rem;color:var(--text-muted);margin:0 0 16px 0;">岗位搜索(BOSS+猎聘) + AI匹配评分 + 简历定制</p>
+        <button id="btn-career" onclick="runAgent('career')" style="background:#3fb950;color:#fff;border:none;padding:8px 20px;border-radius:6px;font-size:0.9rem;cursor:pointer;width:100%;">▶ 运行 Career Agent</button>
+      </div>
+      <div style="flex:1;min-width:240px;background:var(--bg-card);border-radius:8px;padding:20px;border:1px solid var(--border-color);">
+        <h4 style="margin:0 0 8px 0;">📖 Knowledge Recommendation</h4>
+        <p style="font-size:0.85rem;color:var(--text-muted);margin:0 0 16px 0;">知识库回顾 + 五维打分 + MMR精选TOP5</p>
+        <button id="btn-recommendation" onclick="runAgent('recommendation')" style="background:#58a6ff;color:#fff;border:none;padding:8px 20px;border-radius:6px;font-size:0.9rem;cursor:pointer;width:100%;">▶ 运行 Recommendation</button>
+      </div>
+      <div style="flex:1;min-width:240px;background:var(--bg-card);border-radius:8px;padding:20px;border:1px solid var(--border-color);">
+        <h4 style="margin:0 0 8px 0;">📋 Daily Digest</h4>
+        <p style="font-size:0.85rem;color:var(--text-muted);margin:0 0 16px 0;">飞书同步 + 知识回顾 + 网络发现 → 邮件推送</p>
+        <button id="btn-digest" onclick="runAgent('digest')" style="background:#a371f7;color:#fff;border:none;padding:8px 20px;border-radius:6px;font-size:0.9rem;cursor:pointer;width:100%;">▶ 运行 Daily Digest</button>
+      </div>
+    </div>
+
+    <div id="agent-output" style="display:none;background:#0d1117;border:1px solid var(--border-color);border-radius:8px;padding:16px;margin-top:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span id="agent-output-title" style="font-weight:600;"></span>
+        <span id="agent-output-status" style="font-size:0.85rem;"></span>
+      </div>
+      <pre id="agent-output-text" style="margin:0;font-size:0.8rem;line-height:1.5;color:#c9d1d9;max-height:500px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;"></pre>
     </div>
   </div>
 
@@ -376,6 +409,74 @@ async function trySearchAPI() {
   const url = '/api/knowledge/search?q=' + encodeURIComponent(q);
   const data = await fetchJSON(url);
   respDiv.textContent = JSON.stringify(data, null, 2);
+}
+
+// ── Agent Control ──
+let currentJobId = null;
+let pollTimer = null;
+
+async function runAgent(agentId) {
+  const btn = document.getElementById('btn-' + agentId);
+  btn.disabled = true;
+  btn.textContent = '⏳ 启动中...';
+
+  const outDiv = document.getElementById('agent-output');
+  outDiv.style.display = 'block';
+  document.getElementById('agent-output-title').textContent =
+    agentId === 'career' ? 'Career Agent' :
+    agentId === 'recommendation' ? 'Knowledge Recommendation' : 'Daily Digest';
+  document.getElementById('agent-output-status').innerHTML =
+    '<span style="color:#d2991d;">⏳ running...</span>';
+  document.getElementById('agent-output-text').textContent = 'Starting...';
+
+  try {
+    const res = await fetch('/api/run/' + agentId, { method: 'POST' });
+    const data = await res.json();
+    currentJobId = data.job_id;
+    pollTimer = setInterval(pollJobStatus, 1500);
+  } catch (e) {
+    document.getElementById('agent-output-text').textContent = 'Request failed: ' + e;
+    btn.disabled = false;
+    btn.textContent = '▶ 运行';
+  }
+}
+
+async function pollJobStatus() {
+  if (!currentJobId) return;
+  const res = await fetch('/api/run/' + currentJobId + '/status');
+  const job = await res.json();
+  const textEl = document.getElementById('agent-output-text');
+  const statusEl = document.getElementById('agent-output-status');
+
+  textEl.textContent = job.output || '';
+  textEl.scrollTop = textEl.scrollHeight;
+
+  if (job.status === 'done') {
+    statusEl.innerHTML = '<span style="color:#3fb950;">✅ Done</span>';
+    clearInterval(pollTimer);
+    resetButton(job.agent);
+  } else if (job.status === 'failed') {
+    statusEl.innerHTML = '<span style="color:#f85149;">❌ Failed (exit=' + job.exit_code + ')</span>';
+    clearInterval(pollTimer);
+    resetButton(job.agent);
+  } else if (job.status === 'timeout') {
+    statusEl.innerHTML = '<span style="color:#f85149;">⏰ Timeout</span>';
+    clearInterval(pollTimer);
+    resetButton(job.agent);
+  } else if (job.status === 'error') {
+    statusEl.innerHTML = '<span style="color:#f85149;">❌ Error</span>';
+    clearInterval(pollTimer);
+    resetButton(job.agent);
+  }
+}
+
+function resetButton(agentId) {
+  const btn = document.getElementById('btn-' + agentId);
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = '▶ 运行 ' + (agentId === 'career' ? 'Career Agent' :
+      agentId === 'recommendation' ? 'Recommendation' : 'Daily Digest');
+  }
 }
 
 // ── Init ──

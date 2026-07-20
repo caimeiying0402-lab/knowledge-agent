@@ -37,3 +37,23 @@ CREATE INDEX IF NOT EXISTS idx_rec_url ON recommendations(url);
 CREATE INDEX IF NOT EXISTS idx_rec_score ON recommendations(score DESC);
 CREATE INDEX IF NOT EXISTS idx_rec_created ON recommendations(created_at);
 CREATE INDEX IF NOT EXISTS idx_rec_delivered ON recommendations(delivered);
+
+-- AIOS 每日汇总缓存（Mac 推送过来，Web 页面展示）
+CREATE TABLE IF NOT EXISTS digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+-- 用户反馈（Web 页面 like/dislike）
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    source TEXT DEFAULT 'web',
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_item ON feedback(item_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
