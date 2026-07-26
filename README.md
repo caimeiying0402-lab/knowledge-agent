@@ -7,11 +7,7 @@
 ### 知识同步（企微消息 → 飞书知识库）
 
 ```bash
-# 一键启动全部服务（云端同步 + 微信客服轮询）
-bash start_wechat.sh
-
-# 仅启动云端同步（从 Cloudflare Worker 拉取企微消息）
-bash start_wechat.sh sync
+bash /Users/caimeiying/AI-Agent-Lab/knowledge-agent/start_wechat.sh
 ```
 
 启动后，Mac 开机状态下持续运行。关机期间消息自动排队到 Cloudflare D1，开机后自动补拉。
