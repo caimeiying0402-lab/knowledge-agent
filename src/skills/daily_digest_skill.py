@@ -6,7 +6,9 @@
 import json
 import logging
 import os
+import random
 import re
+import time
 import yaml
 from pathlib import Path
 from skills.delivery_skill import notify_wechat_kf, notify_email
@@ -418,6 +420,79 @@ def _truncate_chunk(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> str:
     return text[:cut] + "\n…"
 
 
+# ── 推送历史去重 ──
+
+_DIGEST_HISTORY_FILE = BASE_DIR / "data" / "digest_history.json"
+_HISTORY_WINDOW_DAYS = 7  # 7 天内推送过的片段大幅降权
+
+
+def _load_delivered_keys() -> set:
+    """加载最近 N 天已推送的片段标识 (source_title#title)"""
+    try:
+        with open(_DIGEST_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cutoff = int(time.time()) - _HISTORY_WINDOW_DAYS * 86400
+        return {
+            entry["key"]
+            for entry in data.get("history", [])
+            if entry.get("ts", 0) > cutoff
+        }
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+
+def _record_delivered_chunks(chunks: list[dict]):
+    """记录本次推送的片段，保留最近 14 天"""
+    try:
+        with open(_DIGEST_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {"history": []}
+
+    cutoff = int(time.time()) - 14 * 86400
+    history = [h for h in data.get("history", []) if h.get("ts", 0) > cutoff]
+
+    now = int(time.time())
+    for ch in chunks:
+        key = f"{ch.get('source_title', '')}#{ch.get('title', '')}"
+        history.append({"key": key, "ts": now})
+
+    try:
+        with open(_DIGEST_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump({"history": history}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.debug(f"记录推送历史失败: {e}")
+
+
+def _temperature_sample(chunks: list[dict], k: int, temperature: float = 0.6) -> list[dict]:
+    """温度采样：高分优先，但低分片段也有机会入选。
+
+    temperature → 0 时趋近于 greedy top-k；
+    temperature → 1 时趋近于均匀随机；
+    默认 0.6 兼顾相关性与多样性。
+    """
+    if len(chunks) <= k:
+        return chunks
+
+    scores = [max(c.get("score", 0), 0.01) for c in chunks]
+    adjusted = [s ** (1 / temperature) for s in scores]
+    total = sum(adjusted)
+    probs = [a / total for a in adjusted]
+
+    available = list(range(len(chunks)))
+    selected = []
+    for _ in range(min(k, len(chunks))):
+        avail_probs = [probs[i] for i in available]
+        s = sum(avail_probs)
+        if s > 0:
+            avail_probs = [p / s for p in avail_probs]
+        idx = random.choices(available, weights=avail_probs, k=1)[0]
+        selected.append(idx)
+        available.remove(idx)
+
+    return [chunks[i] for i in selected]
+
+
 # ── 飞书配置 ──
 
 def _load_feishu_sources() -> list[dict]:
@@ -517,8 +592,17 @@ def send_daily_digest() -> bool:
     profile = _load_profile()
 
     # ── 2. 网络发现：外部推荐 ──
-    ext_items = get_recommendations(limit=30, delivered_only=True)
-    ext_recent = [r for r in ext_items if r.get("recommended_at", 0) > today_start]
+    # 直接查数据库按时间取最近 48 小时，避免被老高分推荐挤掉
+    cutoff_time = int(time.time()) - 2 * 86400
+    rows = conn.execute(
+        """SELECT id, url, title, snippet, score, reason, category_match,
+                  interest_category, source_query, full_content, recommended_at
+           FROM recommendations
+           WHERE delivered=1 AND recommended_at > ?
+           ORDER BY recommended_at DESC LIMIT 30""",
+        (cutoff_time,),
+    ).fetchall()
+    ext_recent = [dict(r) for r in rows]
 
     if not source_records and not ext_recent:
         logger.info("今日无内容，跳过汇总推送")
@@ -535,6 +619,7 @@ def send_daily_digest() -> bool:
 
         # Wiki 长文档：切片 + 评分排序 → 只展示 TOP 片段
         all_chunks = []
+        top_chunks = []
         for rec in wiki_records:
             chunks = _chunk_document(
                 rec["raw_content"], rec["title"],
@@ -547,7 +632,23 @@ def send_daily_digest() -> bool:
 
         if all_chunks:
             scored = _score_chunks(all_chunks, profile)
-            top_chunks = scored[:MAX_CHUNKS]
+
+            # ── 去重与随机化选择 ──
+            # 1. 历史推送过的片段大幅降权（7 天内）
+            delivered_keys = _load_delivered_keys()
+            for ch in scored:
+                key = f"{ch.get('source_title', '')}#{ch.get('title', '')}"
+                if key in delivered_keys:
+                    ch['score'] *= 0.05  # 已推送过 → 降权 95%
+
+            # 2. 构建足够大的候选池（top 20），不再限制"同一文档最多一个"
+            candidate_pool = scored[:20]
+
+            # 3. 温度采样：temperature=0.8 让低分片段有更高概率入选
+            top_chunks = _temperature_sample(candidate_pool, MAX_CHUNKS, temperature=0.8)
+
+            # 4. 记录本次推送（用于下次去重）
+            _record_delivered_chunks(top_chunks)
 
             shown_titles = set()
             for i, ch in enumerate(top_chunks):
@@ -593,10 +694,11 @@ def send_daily_digest() -> bool:
                 lines.append(f"\n📎 另有「{'」「'.join(missing)}」可查看原文")
             lines.append("")
 
-        # Bitable 记录：保持原来的原子化展示
+        # Bitable 记录：随机采样 5 条，避免每天重复
         if bitable_records:
             lines.append("\n📊 知识条目")
-            for rec in bitable_records[:10]:
+            random.shuffle(bitable_records)
+            for rec in bitable_records[:5]:
                 title = rec["title"][:80]
                 raw = rec["raw_content"]
                 cat = rec["category"]
@@ -639,35 +741,24 @@ def send_daily_digest() -> bool:
             "reason": r.get("reason", "")[:200],
             "category": r.get("interest_category", r.get("category_match", "")),
         })
-    # 2) 知识库精选片段（引用上面已处理的变量）
-    if source_records:
-        _wiki_records = [r for r in source_records if r["url_type"] in ("wiki", "docx", "doc")]
-        _bitable_records = [r for r in source_records if r["url_type"] == "bitable"]
-        _all_chunks = []
-        for rec in _wiki_records:
-            chunks = _chunk_document(rec["raw_content"], rec["title"], source_path=rec["source_path"])
-            for ch in chunks:
-                ch["source_title"] = rec["title"]
-                ch["source_path"] = rec["source_path"]
-            _all_chunks.extend(chunks)
-        if _all_chunks:
-            _scored = _score_chunks(_all_chunks, profile)
-            _top_chunks = _scored[:MAX_CHUNKS]
-            seen_titles = set()
-            for ch in _top_chunks:
-                t = ch.get("title", "")[:120]
-                if t in seen_titles:
-                    continue
-                seen_titles.add(t)
-                portal_items.append({
-                    "id": (ch.get("source_path", "") + "#" + t)[:200],
-                    "title": t,
-                    "url": ch.get("source_path", ""),
-                    "score": ch.get("score", 0),
-                    "reason": ", ".join(ch.get("matched_keywords", [])[:3]),
-                    "category": "知识库回顾",
-                })
-        for rec in _bitable_records[:5]:
+    # 2) 知识库精选片段（复用上面已采样后的 top_chunks）
+    if top_chunks:
+        seen_titles = set()
+        for ch in top_chunks:
+            t = ch.get("title", "")[:120]
+            if t in seen_titles:
+                continue
+            seen_titles.add(t)
+            portal_items.append({
+                "id": (ch.get("source_path", "") + "#" + t)[:200],
+                "title": t,
+                "url": ch.get("source_path", ""),
+                "score": ch.get("score", 0),
+                "reason": ", ".join(ch.get("matched_keywords", [])[:3]),
+                "category": "知识库回顾",
+            })
+    if bitable_records:
+        for rec in bitable_records[:5]:
             portal_items.append({
                 "id": rec.get("id", ""),
                 "title": rec.get("title", "")[:120],
