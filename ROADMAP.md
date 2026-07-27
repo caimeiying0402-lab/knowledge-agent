@@ -13,6 +13,7 @@
 | Career Agent | 100% | 完成，每日 7:00 自动运行 |
 | Discovery Agent | ~85% | 搜索偶有波动（网络环境），RSS 固定源补位稳定 |
 | Recommendation Agent | ~90% | 代码完成，每日 8:00 自动运行 |
+| AI Tutor Agent | 0% | 设计完成，见 docs/AI_TUTOR_DESIGN.md，待开发 |
 | 自动记账 Agent | 0% | 已取消/延期 |
 | Rule Mining Agent | 0% | 未启动 |
 
