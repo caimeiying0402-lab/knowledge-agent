@@ -363,32 +363,25 @@ def _load_profile() -> dict:
 
 
 def _score_chunks(chunks: list[dict], profile: dict) -> list[dict]:
-    """基于兴趣画像对片段评分排序"""
+    """片段评分：统一基础分 + 只保留惩罚项，不偏向任何主题。"""
     keywords = profile.get("keywords", [])
-    if not keywords:
-        for ch in chunks:
-            ch['score'] = 0
-            ch['matched_keywords'] = []
-        return chunks
 
     for ch in chunks:
-        text = ch['title'] + ' ' + ch['content']
-        score = 0.0
+        # 统一基础分，不偏好任何主题
+        score = 1.0
         matched = []
+
+        # 仅记录匹配关键词用于展示，不参与评分
+        text = ch['title'] + ' ' + ch['content']
         for kw in keywords:
             term = kw.get("term", "")
-            weight = kw.get("weight", 0.5)
-            # 拆词匹配（term 含空格则精确匹配，否则按单字匹配）
             if ' ' in term or '与' in term or '和' in term:
-                # 多词 term，拆开匹配
                 parts = re.split(r'[\s与和]', term)
                 hits = sum(1 for p in parts if p and p in text)
                 if hits >= len(parts) * 0.5:
-                    score += weight * (hits / len(parts))
                     matched.append(term)
             else:
                 if term in text:
-                    score += weight
                     matched.append(term)
 
         # 惩罚项
@@ -397,7 +390,7 @@ def _score_chunks(chunks: list[dict], profile: dict) -> list[dict]:
         elif ch.get('image_count', 0) > 0:
             score *= 0.7
         if ch.get('code_ratio', 0) > 0.3:
-            score *= 0.5  # JSON/code 密集型降权
+            score *= 0.5
 
         ch['score'] = round(score, 2)
         ch['matched_keywords'] = matched
@@ -423,7 +416,7 @@ def _truncate_chunk(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> str:
 # ── 推送历史去重 ──
 
 _DIGEST_HISTORY_FILE = BASE_DIR / "data" / "digest_history.json"
-_HISTORY_WINDOW_DAYS = 7  # 7 天内推送过的片段大幅降权
+_HISTORY_WINDOW_DAYS = 5  # 5 天内推送过的片段大幅降权
 
 
 def _load_delivered_keys() -> set:
