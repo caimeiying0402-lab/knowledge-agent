@@ -298,11 +298,11 @@ def sync_once():
         messages = fetch_pending()
     except Exception as e:
         logger.error(f"拉取消息失败(已重试): {e}")
-        return
+        return  # loop 中会判定为失败，触发 backoff
 
     if not messages:
         logger.info("没有待处理消息")
-        return
+        return 0  # 正常空闲，不是失败
 
     logger.info(f"拉取到 {len(messages)} 条待处理消息")
     processed_ids = []

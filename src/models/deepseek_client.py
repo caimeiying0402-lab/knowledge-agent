@@ -18,7 +18,7 @@ def chat(system_prompt, user_content, temperature=0, max_tokens=None):
     if max_tokens:
         kwargs["max_tokens"] = max_tokens
     response = client.chat.completions.create(
-        model="deepseek-chat",
+        model="deepseek-v4-pro",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
